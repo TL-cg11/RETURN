@@ -1,4 +1,4 @@
-# RE:TURN — Detailed Project Plan
+# RE:TURN — Detailed Project Plan .
 
 ## A living museum where communities and curators reconstruct object histories with agents, while provenance, consent, and human authority determine what becomes the official record.
 
