@@ -1,0 +1,1 @@
+export async function POST(request:Request){const body=await request.json() as {role?:string};const role=body.role==='curator'?'curator':'community';return Response.json({role},{headers:{'set-cookie':`role=${role}; Path=/; SameSite=Lax; Max-Age=86400`}});}
