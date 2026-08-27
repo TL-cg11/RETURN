@@ -284,9 +284,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       const row = id ? await getSubmission(museumId, id) : null;
       if (!row) return invalid('submission_id', 'No contribution with that id exists in this workspace.', 'Call list_submissions to list open contributions.');
       await setSubmissionStatus(museumId, id, 'needs information');
-      await recordActivity(museumId, 'Curator Agent', 'requested clarification', `${row.title} · ${question}`);
+      const clarifyPolicy = evaluatePolicy({ actor: 'curator', action: 'request_clarification', museumMatch: true });
+      await recordActivity(museumId, 'Curator Agent', 'requested clarification', `${row.title} · ${question}`, {
+        tool: 'request_clarification', target: id, risk: clarifyPolicy.risk,
+        policyDecision: clarifyPolicy.outcome, result: 'needs information',
+      });
       return Response.json({
-        ...evaluatePolicy({ actor: 'curator', action: 'request_clarification', museumMatch: true }),
+        ...clarifyPolicy,
         submission_id: id, status: 'needs information',
       });
     }

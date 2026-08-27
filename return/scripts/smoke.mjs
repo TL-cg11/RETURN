@@ -234,6 +234,42 @@ async function main() {
   const escalationActivity = await get('/curator/activity');
   check('the resolution is written to the audit trail', /resolved a policy referral|dismissed a policy referral/.test(escalationActivity.text));
 
+  /* ---------- 7c. audit trail (B3) ---------- */
+  section('audit trail');
+  const auditPage = await get('/curator/activity');
+  check('the audit page renders', auditPage.status === 200);
+  const clarified = await tool('request_clarification', { submission_id: submissionId, question: 'Who took the photograph?' });
+  check('an agent clarification is applied', clarified.json?.outcome === 'applied', JSON.stringify(clarified.json?.outcome));
+  const audit = await get('/curator/activity');
+  check('the gateway denial is attributed to the Policy Gateway', /Policy Gateway/.test(audit.text));
+  check('the agent and the human are named separately', /Curator Agent/.test(audit.text) && /Mina, Curator/.test(audit.text));
+  check('denied decisions are marked as denied in the feed', /denied/i.test(audit.text));
+
+  /* ---------- 7d. live record (B4) ---------- */
+  section('live record');
+  const pollOne = await get('/api/events/poll');
+  check('the poll endpoint returns a revision token', pollOne.status === 200 && typeof pollOne.json?.revision === 'string', JSON.stringify(pollOne.json));
+  const revisionBefore = pollOne.json?.revision;
+  await tool('submit_context_claim', { object_id: 'dawn-marker', claim: 'Live-record smoke claim', source: 'Verification run', consent: 'public_anonymous' });
+  const pollTwo = await get('/api/events/poll');
+  check('a contribution moves the revision token', pollTwo.json?.revision !== revisionBefore, `${revisionBefore} -> ${pollTwo.json?.revision}`);
+  check('the token names the latest participant', typeof pollTwo.json?.latest?.actor === 'string', JSON.stringify(pollTwo.json?.latest));
+  check('the change token carries no record content', !JSON.stringify(pollTwo.json).includes('Live-record smoke claim'));
+
+  const stream = await fetch(`${base}/api/events`, { headers: { cookie: cookieHeader(), accept: 'text/event-stream' } });
+  check('the stream answers as an event stream', (stream.headers.get('content-type') ?? '').includes('text/event-stream'), stream.headers.get('content-type') ?? 'none');
+  const reader = stream.body.getReader();
+  const firstFrame = await Promise.race([
+    reader.read().then(({ value }) => new TextDecoder().decode(value ?? new Uint8Array())),
+    new Promise((resolve) => setTimeout(() => resolve(''), 8000)),
+  ]);
+  check('the stream opens with a sync frame', /event: sync/.test(firstFrame), JSON.stringify(firstFrame.slice(0, 80)));
+  check('the sync frame carries the same revision token', firstFrame.includes(pollTwo.json?.revision ?? ' '));
+  await reader.cancel().catch(() => {});
+
+  const communityStream = await fetch(`${base}/api/events/poll`, { headers: { cookie: cookieHeader() } });
+  check('both surfaces read one workspace token', (await communityStream.json()).revision === pollTwo.json?.revision);
+
   /* ---------- 8. approvals ---------- */
   section('approvals');
   const pending = await tool('list_pending_approvals', {});

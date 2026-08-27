@@ -263,6 +263,27 @@ export async function listEscalations(museumId: string, status = 'open', limit =
   return result.results ?? [];
 }
 
+/**
+ * A cheap change token for one workspace.
+ *
+ * Every consequential action already writes an activity row — contributions,
+ * policy refusals, escalations, and published revisions alike — so the activity
+ * table is the one signal that covers all of them. Submissions are counted too,
+ * so a write that somehow skips the log still moves the token.
+ */
+export async function workspaceRevision(museumId: string) {
+  const db = await ensureDatabase(museumId);
+  const [activityRow, submissionRow, latest] = await Promise.all([
+    db.prepare('SELECT COUNT(*) AS n, COALESCE(MAX(created_at),0) AS at FROM activity WHERE museum_id=?').bind(museumId).first<{ n: number; at: number }>(),
+    db.prepare('SELECT COUNT(*) AS n FROM submissions WHERE museum_id=?').bind(museumId).first<{ n: number }>(),
+    db.prepare('SELECT actor,action,target,policy_decision FROM activity WHERE museum_id=? ORDER BY created_at DESC LIMIT 1').bind(museumId).first<{ actor: string; action: string; target: string; policy_decision: string }>(),
+  ]);
+  return {
+    revision: `${activityRow?.n ?? 0}.${submissionRow?.n ?? 0}.${activityRow?.at ?? 0}`,
+    latest: latest ? { actor: latest.actor, action: latest.action, target: latest.target, decision: latest.policy_decision } : null,
+  };
+}
+
 export async function getEscalation(museumId: string, id: string) {
   const db = await ensureDatabase(museumId);
   return db.prepare('SELECT id,object_id,tool,args,policy,source_refs,status,created_at,resolved_at FROM escalations WHERE museum_id=? AND id=?')
