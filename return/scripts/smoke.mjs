@@ -198,7 +198,7 @@ async function main() {
   check('propose_label_update without a draft is invalid', noDraft.status === 400 && noDraft.json.field === 'draft');
 
   const returnReview = await tool('open_return_review', { object_id: 'moonbird-mask', basis: 'Community request', evidence_ids: ['EV-059'] });
-  check('open_return_review on submitted-only evidence still requires a human', ['denied', 'pending_approval'].includes(returnReview.json?.outcome));
+  check('open_return_review on submitted-only evidence is denied', returnReview.json?.outcome === 'denied', JSON.stringify(returnReview.json?.outcome));
   check('open_return_review never transfers custody', returnReview.json?.transfers_custody === false);
 
   /* ---------- 8. approvals ---------- */
