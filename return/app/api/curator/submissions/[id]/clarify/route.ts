@@ -3,7 +3,7 @@ import { evaluatePolicy } from '@/lib/policy/evaluate';
 import { sessionFromRequest } from '@/lib/session';
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
-  const { role, museumId } = sessionFromRequest(request);
+  const { role, museumId } = await sessionFromRequest(request);
   if (role !== 'curator') return Response.json({ error: 'Curator role required' }, { status: 403 });
 
   const { id } = await params;
@@ -14,7 +14,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const submission = await getSubmission(museumId, id).catch(() => null);
   if (!submission) return Response.json({ error: 'Submission not found' }, { status: 404 });
 
-  const policy = evaluatePolicy({ actor: 'curator', action: 'request_clarification', museumMatch: true });
+  const policy = evaluatePolicy({ actor: role, action: 'request_clarification', museumMatch: submission.museum_id === museumId });
   await setSubmissionStatus(museumId, id, 'needs information');
   await recordActivity(museumId, 'Mina, Curator', 'requested clarification', `${submission.title} · ${question}`, {
     actorRole: 'curator_ui', actorType: 'human', tool: 'request_clarification', target: id,

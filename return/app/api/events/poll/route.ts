@@ -11,7 +11,7 @@ export const dynamic = 'force-dynamic';
  * absence of record content.
  */
 export async function GET(request: Request) {
-  const { museumId } = sessionFromRequest(request);
+  const { museumId } = await sessionFromRequest(request);
   return Response.json(await workspaceRevision(museumId), {
     headers: { 'cache-control': 'no-store' },
   });
