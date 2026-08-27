@@ -4,7 +4,7 @@ import { toolsFor, type ToolSpec } from './tools.ts';
 
 type ModelContext = {
   registerTool: (spec: unknown) => void;
-  /** Chrome does not implement this yet; a registered tool cannot be taken back. */
+  /** Not in the specification. Some builds still ship it; treat it as a bonus. */
   unregisterTool?: (name: string) => void;
 };
 
@@ -12,14 +12,19 @@ declare global {
   interface Document {
     modelContext?: ModelContext;
   }
+  interface Navigator {
+    modelContext?: ModelContext;
+  }
 }
 
 /**
- * Names already handed to a given ModelContext. Chrome's current implementation
- * exposes `registerTool` but no way to take a tool back, and a repeat
- * registration throws `InvalidStateError: Duplicate tool name`. Left unguarded
- * that exception escapes the mount effect and takes the surrounding React
- * commit down with it, which disables the rest of the page.
+ * Names already handed to a given ModelContext.
+ *
+ * A repeat registration throws `InvalidStateError: Duplicate tool name`, and an
+ * unguarded throw here escapes the mount effect and takes the surrounding React
+ * commit with it, disabling the rest of the page. A name is released only when
+ * the browser actually gave us a way to release it — aborting a signal is the
+ * specified request, but nothing reports back whether the browser honoured it.
  */
 const claimedBy = new WeakMap<ModelContext, Set<string>>();
 
@@ -30,20 +35,28 @@ function claimsFor(context: ModelContext) {
 }
 
 /**
- * `getTools()` is async in Chrome, so it cannot answer this question during a
- * mount. The per-context claim set is the synchronous record instead; it is
- * accurate because a fresh document always gets a fresh ModelContext.
+ * The getter moved from `Navigator` to `Document` in the 2026-05-27 draft, and
+ * `navigator.modelContext` is deprecated rather than gone. Prefer the current
+ * position, accept the old one, and say so once when the old one is used.
  */
-function alreadyRegistered(context: ModelContext, name: string) {
-  return claimsFor(context).has(name);
+function resolveContext(): { context?: ModelContext; legacy: boolean } {
+  if (typeof document !== 'undefined' && document.modelContext) {
+    return { context: document.modelContext, legacy: false };
+  }
+  if (typeof navigator !== 'undefined' && navigator.modelContext) {
+    return { context: navigator.modelContext, legacy: true };
+  }
+  return { legacy: false };
 }
 
-function specFor(tool: ToolSpec) {
+function specFor(tool: ToolSpec, signal: AbortSignal) {
   return {
     name: tool.name,
     description: tool.description,
     inputSchema: { type: 'object', properties: tool.properties ?? {}, required: tool.required ?? [] },
     annotations: { readOnlyHint: tool.readOnly, untrustedContentHint: tool.untrusted ?? false },
+    // The specification's only defined way to take a registration back.
+    signal,
     execute: async (args: unknown) => {
       const response = await fetch(`/api/tools/${tool.name}`, {
         method: 'POST',
@@ -64,15 +77,19 @@ function specFor(tool: ToolSpec) {
  * not the page.
  */
 export function registerWebMcpTools(role: 'community' | 'curator') {
-  const context = typeof document === 'undefined' ? undefined : document.modelContext;
+  const { context, legacy } = resolveContext();
   if (!context) return () => {};
+  if (legacy) {
+    console.warn('[RE:TURN] navigator.modelContext is deprecated; this browser should expose document.modelContext.');
+  }
 
+  const controller = new AbortController();
   const claimed = claimsFor(context);
   const added: string[] = [];
   for (const tool of toolsFor(role)) {
-    if (alreadyRegistered(context, tool.name)) continue;
+    if (claimed.has(tool.name)) continue;
     try {
-      context.registerTool(specFor(tool));
+      context.registerTool(specFor(tool, controller.signal));
       claimed.add(tool.name);
       added.push(tool.name);
     } catch (error) {
@@ -81,6 +98,14 @@ export function registerWebMcpTools(role: 'community' | 'curator') {
   }
 
   return () => {
+    // Abort first: it is what the specification defines, and a browser that
+    // honours it has released the surface by the time we look at anything else.
+    controller.abort();
+
+    // Nothing reports whether the abort was honoured, so a name stays claimed
+    // unless this browser also offers the older explicit release. Holding a name
+    // costs one skipped registration; releasing one the browser still owns costs
+    // a duplicate-name throw on the next mount.
     const unregister = context.unregisterTool;
     if (typeof unregister !== 'function') return;
     for (const name of added) {

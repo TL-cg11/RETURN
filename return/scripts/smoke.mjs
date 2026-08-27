@@ -146,7 +146,14 @@ async function main() {
   check('curator inbox contains the new contribution', inbox.status === 200 && inbox.json.submissions.some((s) => s.id === submissionId));
   check('list_submissions is flagged as external content', inbox.json?.untrusted_content === true);
   const restricted = inbox.json?.submissions?.find((s) => s.consent === 'research_only');
-  check('research_only bodies are withheld from tool output', !!restricted && restricted.description === null && restricted.quotable === false);
+  check('research_only material is flagged as not quotable', !!restricted && restricted.quotable === false);
+  // The triage list carries no bodies at all, so consent cannot leak through it.
+  check('the inbox list carries no contribution bodies', inbox.json.submissions.every((s) => !('description' in s)));
+  // The detail path still has to enforce consent, because that one does carry bodies.
+  const restrictedCase = await tool('get_review_case', { case_id: restricted?.id });
+  check('research_only bodies stay withheld on the detail path', restrictedCase.json?.submitted?.description === null && restrictedCase.json?.submitted?.quotable === false, JSON.stringify(restrictedCase.json?.submitted?.description));
+  const openCase = await tool('get_review_case', { case_id: submissionId });
+  check('a public contribution still reads its body on the detail path', typeof openCase.json?.submitted?.description === 'string' && openCase.json.submitted.description.length > 0);
 
   const inboxPage = await get('/curator/submissions');
   check('submission inbox page shows the new contribution', inboxPage.status === 200 && inboxPage.text.includes(submissionId));
@@ -244,6 +251,39 @@ async function main() {
   check('the resolved escalation leaves the console', !consoleAfterResolve.text.includes(escalationId));
   const escalationActivity = await get('/curator/activity');
   check('the resolution is written to the audit trail', /resolved a policy referral|dismissed a policy referral/.test(escalationActivity.text));
+
+  /* ---------- 7b2. tool output budget (B5/G6) ---------- */
+  section('tool output budget');
+  // The catalogue asks for roughly 1.5K per response. Read that as approximate:
+  // the measured ceiling for a single-record answer is build_provenance_timeline
+  // at ~1.6K, which is the working timeline a curator actually needs.
+  const SINGLE_RECORD_BUDGET = 1800;
+  const LIST_TOOLS = new Set(['list_submissions', 'list_objects', 'list_pending_approvals', 'get_collection_summary']);
+  const oversized = [];
+  for (const name of COMMUNITY_TOOLS.concat(CURATOR_TOOLS)) {
+    if (LIST_TOOLS.has(name)) continue;
+    const args = name === 'get_object_detail' || name === 'get_provenance_timeline' || name === 'build_provenance_timeline' || name === 'draft_label'
+      ? { object_id: 'moonbird-mask' }
+      : name === 'check_submission' ? { submission_id: submissionId }
+      : name === 'get_review_case' ? { case_id: submissionId }
+      : name === 'compare_evidence' ? { evidence_ids: ['EV-059', 'EV-068'] }
+      : name === 'check_approval' ? { approval_id: approvalId }
+      : {};
+    const response = await tool(name, args);
+    if (response.status === 200 && response.text.length > SINGLE_RECORD_BUDGET) {
+      oversized.push(`${name}:${response.text.length}`);
+    }
+  }
+  check(`every single-record read stays inside ${SINGLE_RECORD_BUDGET} characters`, oversized.length === 0, oversized.join(', '));
+
+  // A list must be bounded by its page, not by how full the workspace is. This is
+  // the property that actually protects an agent's context.
+  const smallPage = await tool('list_submissions', { limit: 3 });
+  const largePage = await tool('list_submissions', { limit: 30 });
+  check('list_submissions honours limit', smallPage.json?.returned <= 3 && largePage.json?.returned <= 30, `${smallPage.json?.returned} / ${largePage.json?.returned}`);
+  check('list_submissions reports the full count alongside the page', typeof smallPage.json?.count === 'number' && smallPage.json.count >= smallPage.json.returned);
+  check('a truncated list says so and how to narrow it', smallPage.json.count <= 3 || typeof smallPage.json?.next === 'string');
+  check('list size tracks the page, not the workspace', smallPage.text.length < largePage.text.length || smallPage.json.count <= 3, `${smallPage.text.length} vs ${largePage.text.length}`);
 
   /* ---------- 7c. audit trail (B3) ---------- */
   section('audit trail');

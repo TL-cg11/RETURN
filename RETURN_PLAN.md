@@ -1523,8 +1523,9 @@ Curator UI
 - unmount 또는 role 전환 시 기존 도구 unregister
 - 이름 중복 등록 방지
 - tool execution은 내부 API fetch만 수행
-- tool output은 1.5K character 전후로 유지
+- 단건 tool output은 1.5K character 전후로 유지
 - 긴 자료 본문 대신 ID, 요약, ref를 반환
+- 목록 tool output은 절대 크기 대신 페이지 크기에 유계여야 한다. 응답은 `limit`에 비례하고 workspace 누적량과 무관해야 한다
 
 ### 18.2 Annotation
 

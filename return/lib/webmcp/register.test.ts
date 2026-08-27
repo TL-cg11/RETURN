@@ -160,7 +160,7 @@ test('a browser that rejects a tool never breaks the caller', () => {
   assert.equal(attempts, 12, 'every tool should still be attempted');
 });
 
-test('cleanup is a no-op when the browser cannot unregister', () => {
+test('cleanup still aborts when the browser cannot unregister', () => {
   const previous = (globalThis as { document?: unknown }).document;
   const registered: string[] = [];
   (globalThis as { document?: unknown }).document = {
@@ -194,4 +194,104 @@ test('registration is a no-op when the browser exposes no model context', () => 
   assert.equal(typeof cleanup, 'function');
   cleanup();
   (globalThis as { document?: unknown }).document = previous;
+});
+
+/* G1 — the spec moved the getter from Navigator to Document, but a browser on the
+   older shape must still work. */
+/**
+ * Node defines `navigator` as a getter with no setter, so a plain assignment is
+ * silently dropped. It is configurable, so redefining it works.
+ */
+function setNavigator(value: unknown) {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { value, configurable: true, writable: true });
+  return () => {
+    if (previous) Object.defineProperty(globalThis, 'navigator', previous);
+    else delete (globalThis as { navigator?: unknown }).navigator;
+  };
+}
+
+function withLegacyNavigator(run: (registered: Registered[], warnings: string[]) => void) {
+  const registered: Registered[] = [];
+  const warnings: string[] = [];
+  const globals = globalThis as { document?: unknown };
+  const previousDocument = globals.document;
+  const previousWarn = console.warn;
+  globals.document = {};
+  const restoreNavigator = setNavigator({ modelContext: { registerTool: (spec: Registered) => registered.push(spec) } });
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')); };
+  try { run(registered, warnings); } finally {
+    globals.document = previousDocument;
+    restoreNavigator();
+    console.warn = previousWarn;
+  }
+}
+
+test('a legacy navigator.modelContext still receives the tools', () => withLegacyNavigator((registered) => {
+  registerWebMcpTools('community');
+  assert.equal(registered.length, communityTools.length);
+}));
+
+test('using the legacy navigator getter warns that it is deprecated', () => withLegacyNavigator((registered, warnings) => {
+  registerWebMcpTools('community');
+  assert.ok(warnings.some((line) => /deprecated/i.test(line) && /navigator\.modelContext/.test(line)), warnings.join(' | '));
+}));
+
+test('document.modelContext wins when a browser exposes both', () => {
+  const onDocument: Registered[] = [];
+  const onNavigator: Registered[] = [];
+  const globals = globalThis as { document?: unknown };
+  const previousDocument = globals.document;
+  globals.document = { modelContext: { registerTool: (spec: Registered) => onDocument.push(spec) } };
+  const restoreNavigator = setNavigator({ modelContext: { registerTool: (spec: Registered) => onNavigator.push(spec) } });
+  try {
+    registerWebMcpTools('community');
+    assert.equal(onDocument.length, communityTools.length);
+    assert.equal(onNavigator.length, 0);
+  } finally {
+    globals.document = previousDocument;
+    restoreNavigator();
+  }
+});
+
+/* G2 — the spec has no unregisterTool. An AbortSignal passed at registration is
+   the only defined way to take a surface back. */
+test('registration passes an abort signal the browser can honour', () => withModelContext((registered) => {
+  registerWebMcpTools('curator');
+  const withSignal = registered.filter((spec) => (spec as unknown as { signal?: AbortSignal }).signal instanceof AbortSignal);
+  assert.equal(withSignal.length, registered.length, 'every tool should carry a signal');
+}));
+
+test('cleanup aborts the signal it registered with', () => withModelContext((registered) => {
+  const cleanup = registerWebMcpTools('curator');
+  const signals = registered.map((spec) => (spec as unknown as { signal: AbortSignal }).signal);
+  assert.ok(signals.every((signal) => !signal.aborted), 'signals should start live');
+  cleanup();
+  assert.ok(signals.every((signal) => signal.aborted), 'cleanup should abort every signal');
+}));
+
+test('a surface aborted by cleanup can be registered again', () => withModelContext((registered) => {
+  registerWebMcpTools('community')();
+  const afterFirst = registered.length;
+  registerWebMcpTools('community');
+  assert.equal(registered.length, afterFirst * 2, 'an aborted surface is free to re-register');
+}));
+
+/* G6 — the schema budget the tool catalogue documents. */
+test('every declared parameter describes itself', () => {
+  const missing: string[] = [];
+  for (const tool of [...communityTools, ...curatorTools]) {
+    for (const [field, schema] of Object.entries(tool.properties ?? {})) {
+      if (!(schema as { description?: string }).description) missing.push(`${tool.name}.${field}`);
+    }
+  }
+  assert.deepEqual(missing, [], `parameters without a description: ${missing.join(', ')}`);
+});
+
+test('every required parameter is actually declared', () => {
+  for (const tool of [...communityTools, ...curatorTools]) {
+    for (const field of tool.required ?? []) {
+      assert.ok(tool.properties?.[field], `${tool.name} requires ${field} but never declares it`);
+    }
+  }
 });
