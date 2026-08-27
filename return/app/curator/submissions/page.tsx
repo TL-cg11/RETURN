@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import { NavLink as Link } from '@/components/shared/nav-link';
 import { countByStatus, listSubmissions, SUBMISSION_STATUSES } from '@/db/queries';
 import { collection } from '@/lib/demo-data';
 import { relativeTime, sessionFromCookies } from '@/lib/session';

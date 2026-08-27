@@ -1,5 +1,5 @@
 'use client';
-import Link from 'next/link';
+import { NavLink as Link } from '@/components/shared/nav-link';
 import { usePathname } from 'next/navigation';
 import { useEffect } from 'react';
 import { registerWebMcpTools } from '@/lib/webmcp/register';

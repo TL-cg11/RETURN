@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import { NavLink as Link } from '@/components/shared/nav-link';
 import { CommunityHeader } from '@/components/shared/community-header';
 import { collection, moonbird } from '@/lib/demo-data';
 

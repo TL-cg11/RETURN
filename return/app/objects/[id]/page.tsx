@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import { NavLink as Link } from '@/components/shared/nav-link';
 import { notFound } from 'next/navigation';
 import { LabelFlip } from '@/components/community/label-flip';
 import { CommunityHeader } from '@/components/shared/community-header';

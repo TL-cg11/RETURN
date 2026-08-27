@@ -1,6 +1,6 @@
 'use client';
 
-import Link from 'next/link';
+import { NavLink as Link } from '@/components/shared/nav-link';
 import { usePathname, useRouter } from 'next/navigation';
 import { ReactNode, useEffect, useRef, useState } from 'react';
 import { registerWebMcpTools } from '@/lib/webmcp/register';

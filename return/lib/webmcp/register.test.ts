@@ -116,6 +116,77 @@ test('the returned cleanup unregisters every tool it registered', () => withMode
   assert.deepEqual(unregistered.sort(), registered.map((tool) => tool.name).sort());
 }));
 
+test('a remount does not re-register when the browser cannot unregister', () => {
+  // Chrome exposes registerTool with no way to take a tool back, and a repeat
+  // registration throws InvalidStateError: Duplicate tool name. The second
+  // mount must skip instead.
+  const previous = (globalThis as { document?: unknown }).document;
+  const held = new Set<string>();
+  (globalThis as { document?: unknown }).document = {
+    modelContext: {
+      registerTool: (spec: { name: string }) => {
+        if (held.has(spec.name)) throw new DOMException('Duplicate tool name', 'InvalidStateError');
+        held.add(spec.name);
+      },
+    },
+  };
+
+  registerWebMcpTools('community')();
+  assert.doesNotThrow(() => registerWebMcpTools('community')());
+  assert.equal(held.size, 6);
+  (globalThis as { document?: unknown }).document = previous;
+});
+
+test('a remount re-registers when the browser can unregister', () => withModelContext((registered) => {
+  const cleanup = registerWebMcpTools('community');
+  cleanup();
+  registerWebMcpTools('community');
+  assert.equal(registered.length, 12, 'cleanup released the names, so re-registration is expected');
+}));
+
+test('a browser that rejects a tool never breaks the caller', () => {
+  const previous = (globalThis as { document?: unknown }).document;
+  let attempts = 0;
+  (globalThis as { document?: unknown }).document = {
+    modelContext: {
+      registerTool: () => { attempts++; throw new DOMException('Duplicate tool name', 'InvalidStateError'); },
+    },
+  };
+  const warn = console.warn;
+  console.warn = () => {};
+  assert.doesNotThrow(() => registerWebMcpTools('curator')());
+  console.warn = warn;
+  (globalThis as { document?: unknown }).document = previous;
+  assert.equal(attempts, 12, 'every tool should still be attempted');
+});
+
+test('cleanup is a no-op when the browser cannot unregister', () => {
+  const previous = (globalThis as { document?: unknown }).document;
+  const registered: string[] = [];
+  (globalThis as { document?: unknown }).document = {
+    modelContext: { registerTool: (spec: { name: string }) => registered.push(spec.name) },
+  };
+  const cleanup = registerWebMcpTools('community');
+  assert.doesNotThrow(cleanup);
+  assert.equal(registered.length, 6);
+  (globalThis as { document?: unknown }).document = previous;
+});
+
+test('an async getTools implementation is never treated as a list', () => {
+  // Chrome returns a Promise here. Registration must not depend on it.
+  const previous = (globalThis as { document?: unknown }).document;
+  const registered: string[] = [];
+  (globalThis as { document?: unknown }).document = {
+    modelContext: {
+      registerTool: (spec: { name: string }) => registered.push(spec.name),
+      getTools: async () => [],
+    },
+  };
+  assert.doesNotThrow(() => registerWebMcpTools('community'));
+  assert.equal(registered.length, 6);
+  (globalThis as { document?: unknown }).document = previous;
+});
+
 test('registration is a no-op when the browser exposes no model context', () => {
   const previous = (globalThis as { document?: unknown }).document;
   (globalThis as { document?: unknown }).document = {};
