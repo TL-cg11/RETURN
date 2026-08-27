@@ -16,6 +16,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
   const policy = evaluatePolicy({ actor: 'curator', action: 'request_clarification', museumMatch: true });
   await setSubmissionStatus(museumId, id, 'needs information');
-  await recordActivity(museumId, 'Mina, Curator', 'requested clarification', `${submission.title} · ${question}`);
+  await recordActivity(museumId, 'Mina, Curator', 'requested clarification', `${submission.title} · ${question}`, {
+    actorRole: 'curator_ui', actorType: 'human', tool: 'request_clarification', target: id,
+    risk: policy.risk, policyDecision: policy.outcome, result: 'needs information',
+  });
   return Response.json({ id, ...policy, status: 'needs information', question });
 }

@@ -4,6 +4,7 @@ import { NavLink as Link } from '@/components/shared/nav-link';
 import { usePathname, useRouter } from 'next/navigation';
 import { ReactNode, useEffect, useRef, useState } from 'react';
 import { registerWebMcpTools } from '@/lib/webmcp/register';
+import { useLiveRecord } from '@/lib/live/use-live-record';
 import { curatorTools } from '@/lib/webmcp/tools';
 import { diffLabelText } from '@/lib/label-diff';
 
@@ -43,6 +44,7 @@ export function CuratorShell({
   const labelDiff = approval ? diffLabelText(approval.currentLabel, draft) : [];
 
   useEffect(() => registerWebMcpTools('curator'), []);
+  const liveTransport = useLiveRecord();
 
   // Reset the editable draft when a different approval arrives, during render
   // rather than in an effect, so no cascading render is queued.
@@ -175,6 +177,14 @@ export function CuratorShell({
                   {mcpAvailable
                     ? 'document.modelContext is available — these tools are live in this browser.'
                     : 'document.modelContext is not exposed by this browser, so nothing is registered here. The same tools stay reachable over /api/tools/.'}
+                </p>
+                <p className="mcp-status">
+                  <i className={liveTransport === 'stream' ? 'verified-dot' : 'question-dot'} />
+                  {liveTransport === 'stream'
+                    ? 'Live record: streaming. Contributions and approvals appear here without a reload.'
+                    : liveTransport === 'polling'
+                      ? 'Live record: polling every 2s. The stream was unavailable, so this surface falls back to asking.'
+                      : 'Live record: connecting…'}
                 </p>
                 <p>These tools are registered on the curator surface only. Community pages register a different set of six. The server re-checks the role on every call.</p>
                 <ul className="tool-list">

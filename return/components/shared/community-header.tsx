@@ -3,10 +3,12 @@ import { NavLink as Link } from '@/components/shared/nav-link';
 import { usePathname } from 'next/navigation';
 import { useEffect } from 'react';
 import { registerWebMcpTools } from '@/lib/webmcp/register';
+import { useLiveRecord } from '@/lib/live/use-live-record';
 
 export function CommunityHeader({ curator=false }: { curator?:boolean }) {
   const path=usePathname();
   useEffect(()=>registerWebMcpTools(curator?'curator':'community'),[curator]);
+  useLiveRecord();
   async function switchRole(){ await fetch('/api/session',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({role:curator?'community':'curator'})}); location.href=curator?'/':'/curator'; }
   return (
     <header className={curator?'console-topbar':'site-header'}>
