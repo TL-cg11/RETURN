@@ -3,6 +3,9 @@ export type Consent = 'private' | 'research_only' | 'public_anonymous' | 'public
 export type Visibility = 'public' | 'restricted' | 'sealed';
 export type AssertionMode = 'verified_fact' | 'attributed_claim' | 'open_question';
 
+/** One claim inside a published label, with the evidence it rests on. */
+export type LabelAssertion = { mode: AssertionMode; text: string; refs: string[] };
+
 export type TimelineEvent = {
   id: string;
   year: string;
@@ -31,6 +34,10 @@ export type CollectionObject = {
   version: number;
   questions: string[];
   label: string;
+  /** Revision number of the label currently on public display. */
+  labelRevision: number;
+  labelAssertions: LabelAssertion[];
+  labelPublishedAt: number | null;
 };
 
 export type ObjectRecord = CollectionObject & { timeline: TimelineEvent[] };

@@ -1,4 +1,4 @@
-import type { Authority, CollectionObject, Consent, EvidenceRecord, TimelineEvent, Visibility } from '@/lib/domain/types';
+import type { Authority, CollectionObject, Consent, EvidenceRecord, LabelAssertion, TimelineEvent, Visibility } from '@/lib/domain/types';
 import { ensureDatabase } from './setup';
 
 export type SubmissionRow = {
@@ -33,7 +33,8 @@ type ObjectRow = {
   id: string; accession_number: string; title: string; description: string; period: string; material: string;
   origin: string; acquisition_date: string | null; provenance_gap: string | null; record_status: string;
   display_tone: string; visibility: string; provenance_completeness: number; version: number;
-  questions: string; current_label: string | null;
+  questions: string; current_label: string | null; label_revision: number | null;
+  label_assertions: string | null; label_published_at: number | null;
 };
 
 type EvidenceRow = {
@@ -61,6 +62,22 @@ function parseArray(value: string) {
   }
 }
 
+/** Assertions are stored as JSON on the publication row. Unreadable rows read as none. */
+function parseAssertions(value: string | null): LabelAssertion[] {
+  try {
+    const parsed: unknown = JSON.parse(value ?? '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((entry) => {
+      const item = entry as Partial<LabelAssertion>;
+      return item && typeof item.mode === 'string'
+        ? [{ mode: item.mode as LabelAssertion['mode'], text: String(item.text ?? ''), refs: Array.isArray(item.refs) ? item.refs.map(String) : [] }]
+        : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
 function mapObject(row: ObjectRow): CollectionObject {
   return {
     id: row.id, accession: row.accession_number, title: row.title, description: row.description,
@@ -68,6 +85,8 @@ function mapObject(row: ObjectRow): CollectionObject {
     gap: row.provenance_gap, status: row.record_status, tone: row.display_tone,
     visibility: row.visibility as Visibility, provenanceCompleteness: row.provenance_completeness,
     version: row.version, questions: parseArray(row.questions), label: row.current_label ?? '',
+    labelRevision: row.label_revision ?? row.version, labelAssertions: parseAssertions(row.label_assertions),
+    labelPublishedAt: row.label_published_at,
   };
 }
 
@@ -79,7 +98,8 @@ function objectVisibility(access: ObjectAccess) {
 
 const OBJECT_SELECT = `SELECT o.id,o.accession_number,o.title,o.description,o.period,o.material,o.origin,
   o.acquisition_date,o.provenance_gap,o.record_status,o.display_tone,o.visibility,
-  o.provenance_completeness,o.version,o.questions,lp.body AS current_label
+  o.provenance_completeness,o.version,o.questions,lp.body AS current_label,
+  lp.revision_number AS label_revision,lp.assertions AS label_assertions,lp.published_at AS label_published_at
   FROM objects o LEFT JOIN label_publications lp
   ON lp.museum_id=o.museum_id AND lp.id=o.current_label_id`;
 

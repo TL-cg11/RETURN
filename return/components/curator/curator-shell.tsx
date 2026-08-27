@@ -85,17 +85,26 @@ export function CuratorShell({
     location.href = '/curator';
   }
 
-  async function resolve(action: 'approved' | 'rejected') {
+  async function resolve(decision: 'approve' | 'reject') {
     if (!approval) return;
     setError('');
+    const edited = decision === 'approve' && draft !== approval.snapshot;
+    const body = decision === 'reject'
+      ? { action: 'rejected' }
+      : { action: edited ? 'approve_with_edit' : 'approved', draft, ...(edited ? { editReason: 'Curator edited the proposed label during approval.' } : {}) };
     const response = await fetch(`/api/curator/approvals/${approval.id}/resolve`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action, draft }),
+      body: JSON.stringify(body),
     });
-    if (!response.ok) { setError('Could not save this decision.'); return; }
-    const data = await response.json() as { resolution?: string };
-    setResolved(data.resolution ?? action);
+    const data = await response.json().catch(() => null) as { resolution?: string; reason?: string; next?: string } | null;
+    if (!response.ok) {
+      // The gateway explains why it refused and what to do next. Say both rather
+      // than replacing a real answer with a generic failure.
+      setError(data?.reason ? [data.reason, data.next].filter(Boolean).join(' ') : 'Could not save this decision.');
+      return;
+    }
+    setResolved(data?.resolution ?? (decision === 'reject' ? 'rejected' : 'approved'));
     setTimeout(() => { setDrawer(false); router.refresh(); }, 900);
   }
 
@@ -237,8 +246,8 @@ export function CuratorShell({
                 </section>
                 {error && <p className="clarify-result" role="alert">{error}</p>}
                 <footer>
-                  <button type="button" className="reject-action" onClick={() => resolve('rejected')}>Reject</button>
-                  <button type="button" className="approve-action" onClick={() => resolve('approved')}>
+                  <button type="button" className="reject-action" onClick={() => resolve('reject')}>Reject</button>
+                  <button type="button" className="approve-action" onClick={() => resolve('approve')}>
                     {draft === approval.snapshot ? 'Approve' : 'Approve with edit'} <span aria-hidden="true">→</span>
                   </button>
                 </footer>

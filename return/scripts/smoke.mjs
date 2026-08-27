@@ -208,13 +208,21 @@ async function main() {
   check('approval polling is non-blocking', pending.json?.note?.includes('does not block'));
   const beforeResolve = await tool('check_approval', { approval_id: approvalId });
   check('check_approval reports pending', beforeResolve.json?.status === 'pending');
+  // Relative to the version this run started from: the suite may run twice
+  // against the same workspace, and each approval advances the record.
+  const baseVersion = (await tool('get_object_detail', { object_id: 'moonbird-mask' })).json?.object?.version;
 
   const edited = 'The museum acquired this mask through Lorne Gallery in 1968. Community material places it in Aru village in 1959. The intervening custody is under joint research.';
-  const resolveResponse = await post(`/api/curator/approvals/${approvalId}/resolve`, { action: 'approved', draft: edited });
+  const resolveResponse = await post(`/api/curator/approvals/${approvalId}/resolve`, { action: 'approve_with_edit', draft: edited, editReason: 'Preserve the verified acquisition while attributing the community material.' });
   check('approve-with-edit is recorded as such', resolveResponse.status === 200 && resolveResponse.json.resolution === 'approved_with_edit', JSON.stringify(resolveResponse.json));
+  check('approval publishes a new label revision', resolveResponse.json?.published === true && resolveResponse.json?.revision === baseVersion + 1, JSON.stringify(resolveResponse.json));
+  const publishedDetail = await tool('get_object_detail', { object_id: 'moonbird-mask' });
+  check('approved text becomes the public label', publishedDetail.json?.object?.label === edited, JSON.stringify(publishedDetail.json?.object?.label));
+  check('publication advances the object version', publishedDetail.json?.object?.version === baseVersion + 1, `version ${publishedDetail.json?.object?.version} from ${baseVersion}`);
+  check('the public revision number tracks the publication', publishedDetail.json?.object?.label_revision === publishedDetail.json?.object?.version, `revision ${publishedDetail.json?.object?.label_revision}`);
   const afterResolve = await tool('check_approval', { approval_id: approvalId });
   check('check_approval reflects the decision', afterResolve.json?.status === 'approved_with_edit');
-  const replay = await post(`/api/curator/approvals/${approvalId}/resolve`, { action: 'approved', draft: edited });
+  const replay = await post(`/api/curator/approvals/${approvalId}/resolve`, { action: 'approve_with_edit', draft: edited });
   check('a resolved approval cannot be replayed', replay.status === 409, `status ${replay.status}`);
   const ghost = await post('/api/curator/approvals/APR-999/resolve', { action: 'approved' });
   check('an unknown approval is 404', ghost.status === 404, `status ${ghost.status}`);

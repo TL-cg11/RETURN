@@ -3,7 +3,7 @@ import {
   recordActivity, setSubmissionStatus, workspaceSummary, type SubmissionRow,
 } from '@/db/queries';
 import { APPROVAL_TTL_MS, ensureDatabase, sha256 } from '@/db/setup';
-import type { Authority, Consent, Visibility } from '@/lib/domain/types';
+import type { Authority, Consent, EvidenceRecord, LabelAssertion, Visibility } from '@/lib/domain/types';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
 import { evidenceFor, objectRecord, searchCollection } from '@/lib/records';
 import { sessionFromRequest } from '@/lib/session';
@@ -55,6 +55,20 @@ async function refsFrom(museumId: string, args: Record<string, unknown>, objectI
   });
 }
 
+/**
+ * The assertion set a label rests on, in the three documented modes.
+ * Shared so an approved revision publishes the same structure `draft_label` showed.
+ */
+function labelAssertions(record: { gap: string | null }, evidence: EvidenceRecord[]): LabelAssertion[] {
+  const verified = evidence.filter((item) => item.authority === 'verified');
+  const submitted = evidence.filter((item) => item.authority === 'submitted');
+  return [
+    ...(verified.length ? [{ mode: 'verified_fact' as const, text: 'Acquisition is documented in the museum record.', refs: verified.map((item) => item.id) }] : []),
+    ...(submitted.length ? [{ mode: 'attributed_claim' as const, text: 'Community material places the object earlier than the museum record.', refs: submitted.map((item) => item.id) }] : []),
+    ...(record.gap ? [{ mode: 'open_question' as const, text: `Custody between ${record.gap} is unresolved.`, refs: evidence.map((item) => item.id) }] : []),
+  ];
+}
+
 export async function POST(request: Request, { params }: { params: Promise<{ name: string }> }) {
   const { name } = await params;
   const { role, museumId } = sessionFromRequest(request);
@@ -87,6 +101,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
           id: record.id, title: record.title, accession: record.accession, date: record.date,
           material: record.material, region: record.region, status: record.status,
           gap: record.gap, label: record.label, questions: record.questions, version: record.version,
+          label_revision: record.labelRevision,
         },
         contribution_count: submissions.length,
       });
@@ -224,18 +239,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       const record = await objectRecord(museumId, objectId, 'agent');
       if (!record) return invalid(...NO_OBJECT);
       const evidence = await evidenceFor(museumId, record.id, 'agent');
-      const verified = evidence.filter((item) => item.authority === 'verified');
-      const submitted = evidence.filter((item) => item.authority === 'submitted');
       return Response.json({
         object_id: record.id,
         draft: record.gap
           ? `${record.title} is documented from ${record.date}. Its movement between ${record.gap} remains under joint research.`
           : `${record.title}, ${record.date}. ${record.material}.`,
-        assertions: [
-          ...(verified.length ? [{ mode: 'verified_fact', text: 'Acquisition is documented in the museum record.', refs: verified.map((item) => item.id) }] : []),
-          ...(submitted.length ? [{ mode: 'attributed_claim', text: 'Community material places the object earlier than the museum record.', refs: submitted.map((item) => item.id) }] : []),
-          ...(record.gap ? [{ mode: 'open_question', text: `Custody between ${record.gap} is unresolved.`, refs: evidence.map((item) => item.id) }] : []),
-        ],
+        assertions: labelAssertions(record, evidence),
         published: false,
         note: 'Draft only. Publishing requires propose_label_update and a human curator.',
       });
@@ -273,7 +282,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       const db = await ensureDatabase(museumId);
       const createdAt = Date.now();
       const evidenceIds = Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [];
-      const argsSnapshot = JSON.stringify({ tool: 'propose_label_update', object_id: record.id, object_version: record.version, draft, evidence_refs: evidenceIds });
+      // Cited evidence only: the published revision must carry the assertions the
+      // proposal was judged on, not everything the object happens to hold.
+      const cited = (await getEvidenceByIds(museumId, evidenceIds, 'curator')).filter((item) => item.objectId === record.id);
+      const argsSnapshot = JSON.stringify({ tool: 'propose_label_update', object_id: record.id, object_version: record.version, draft, assertions: labelAssertions(record, cited), evidence_refs: evidenceIds });
       await db.prepare('INSERT INTO approvals (id,museum_id,object_id,risk,snapshot,tool,args_snapshot,snapshot_hash,object_version,justification,refs_authority,refs_consent,status,resolution,verdict,edited_body,edit_reason,created_at,expires_at,resolved_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
         .bind(approvalId, museumId, record.id, 'HIGH', draft, 'propose_label_update', argsSnapshot, await sha256(argsSnapshot), record.version,
           String(args.justification ?? ''), JSON.stringify(refs.map((ref) => ref.authority)), JSON.stringify(refs.map((ref) => ref.consent)),
