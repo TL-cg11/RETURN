@@ -1,2 +1,41 @@
-import Link from 'next/link'; import { collection } from '@/lib/demo-data';
-export default function ObjectsPage(){return <main className="console-page"><div className="page-head"><div><p className="console-eyebrow">Collection records</p><h1>Objects</h1><p>Prioritise records with gaps, new context, and unresolved access questions.</p></div><button className="command-button">⌘ Analyse collection</button></div><div className="object-admin-list"><div className="table-head"><span>Object</span><span>Record state</span><span>Provenance</span><span>Updated</span><span/></div>{collection.map((o,i)=><Link className="object-admin-row" href={o.id==='moonbird-mask'?'/curator/cases/RC-014':'#'} key={o.id}><span className={`admin-thumb ${o.tone}`}><i/></span><div><strong>{o.title}</strong><small>{o.accession} · {o.date}</small></div><span>{o.status}</span><span className={o.gap?'has-gap':''}>{o.gap?`Gap ${o.gap}`:'No open gap'}</span><time>{i<2?'Today':`${i+1} days ago`}</time><b>→</b></Link>)}</div></main>}
+import Link from 'next/link';
+import { listSubmissions } from '@/db/queries';
+import { collection } from '@/lib/demo-data';
+import { relativeTime, sessionFromCookies } from '@/lib/session';
+
+export const dynamic = 'force-dynamic';
+
+export default async function ObjectsPage() {
+  const { museumId } = await sessionFromCookies();
+  const submissions = await listSubmissions(museumId);
+
+  return (
+    <main className="console-page">
+      <div className="page-head">
+        <div>
+          <p className="console-eyebrow">Collection records</p>
+          <h1>Objects</h1>
+          <p>Prioritise records with gaps, new context, and unresolved access questions.</p>
+        </div>
+      </div>
+
+      <div className="object-admin-list">
+        <div className="table-head"><span>Object</span><span>Record state</span><span>Provenance</span><span>Contributions</span><span /></div>
+        {collection.map((object) => {
+          const attached = submissions.filter((row) => row.object_id === object.id);
+          const latest = attached[0];
+          return (
+            <Link className="object-admin-row" href={`/objects/${object.id}`} key={object.id}>
+              <span className={`admin-thumb ${object.tone}`}><i /></span>
+              <div><strong>{object.title}</strong><small>{object.accession} · {object.date}</small></div>
+              <span>{object.status}</span>
+              <span className={object.gap ? 'has-gap' : ''}>{object.gap ? `Gap ${object.gap}` : 'No open gap'}</span>
+              <time>{latest ? relativeTime(latest.created_at) : `${attached.length} on file`}</time>
+              <b>→</b>
+            </Link>
+          );
+        })}
+      </div>
+    </main>
+  );
+}

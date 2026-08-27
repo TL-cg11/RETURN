@@ -1,19 +1,287 @@
-import { collection, moonbird, officialEvidence, seedSubmissions } from '@/lib/demo-data'; import { evaluatePolicy } from '@/lib/policy/evaluate';
-const curatorOnly=new Set(['get_collection_summary','list_objects','list_submissions','get_review_case','build_provenance_timeline','compare_evidence','draft_label','request_clarification','propose_label_update','open_return_review','check_approval','list_pending_approvals']);
-export async function POST(request:Request,{params}:{params:Promise<{name:string}>}){const{name}=await params;const role=(request.headers.get('cookie')??'').includes('role=curator')?'curator':'community';if(curatorOnly.has(name)&&role!=='curator')return Response.json({outcome:'denied',risk:'LOW',reason:'Curator role required.',recovery:'Switch to the curator workspace.'},{status:403});const args=await request.json() as Record<string,unknown>;
-  if(name==='search_collection')return Response.json({objects:collection.slice(0,5).map(({id,title,date,gap,status})=>({id,title,date,gap,status}))});
-  if(name==='get_object_detail')return Response.json({object:moonbird});
-  if(name==='get_provenance_timeline'||name==='build_provenance_timeline')return Response.json({object_id:'moonbird-mask',events:moonbird.timeline});
-  if(name==='list_objects')return Response.json({objects:collection});
-  if(name==='list_submissions')return Response.json({submissions:seedSubmissions,untrusted_content:true});
-  if(name==='get_collection_summary')return Response.json({objects:8,open_gaps:3,new_submissions:3,pending_approvals:1,consent_alerts:1});
-  if(name==='get_review_case'||name==='compare_evidence')return Response.json({case_id:'RC-014',evidence:officialEvidence,conflicts:['The 1968 invoice lists no prior owner.'],open_questions:moonbird.questions,untrusted_content:true});
-  if(name==='draft_label')return Response.json({draft:'The mask appears in a 1959 community photograph. Its movement before the museum’s 1968 acquisition remains under joint research.',assertions:[{mode:'attributed_claim',refs:['EV-059']},{mode:'open_question',refs:['EV-059','EV-068']}]});
-  if(name==='propose_label_update'){const refs=(args.evidence_ids as string[]??[]).map((id)=>({authority:id==='EV-068'?'verified' as const:'submitted' as const,consent:'public_attributed' as const,visibility:'public' as const}));return Response.json(evaluatePolicy({actor:'curator',action:'publish_label',museumMatch:true,refs,publicOutput:true}));}
-  if(name==='open_return_review')return Response.json(evaluatePolicy({actor:'curator',action:'open_return_review',museumMatch:true,refs:[]}));
-  if(name==='request_clarification')return Response.json(evaluatePolicy({actor:'curator',action:'request_clarification',museumMatch:true}));
-  if(name==='check_approval'||name==='list_pending_approvals')return Response.json({approvals:[{id:'APR-004',risk:'HIGH',status:'pending',object_id:'moonbird-mask'}]});
-  if(name==='check_submission')return Response.json({id:args.submission_id??'SUB-1042',status:'received',message:'Source and consent review is next.'});
-  if(name==='submit_evidence'||name==='submit_context_claim')return Response.json({...evaluatePolicy({actor:'community',action:'submit_evidence',museumMatch:true}),submission_id:`SUB-${Date.now().toString().slice(-4)}`});
-  return Response.json({error:'Unknown tool'},{status:404});
+import {
+  countByStatus, getApproval, getSubmission, listActivity, listApprovals, listSubmissions,
+  recordActivity, setSubmissionStatus, workspaceSummary, type SubmissionRow,
+} from '@/db/queries';
+import { ensureDatabase, sha256 } from '@/db/setup';
+import { collection, type Authority, type Consent, type Visibility } from '@/lib/demo-data';
+import { evaluatePolicy } from '@/lib/policy/evaluate';
+import { evidenceFor, objectRecord, searchCollection } from '@/lib/records';
+import { sessionFromRequest } from '@/lib/session';
+
+const CURATOR_ONLY = new Set([
+  'get_collection_summary', 'list_objects', 'list_submissions', 'get_review_case',
+  'build_provenance_timeline', 'compare_evidence', 'draft_label', 'request_clarification',
+  'propose_label_update', 'open_return_review', 'check_approval', 'list_pending_approvals',
+]);
+
+const COMMUNITY_TOOLS = new Set([
+  'search_collection', 'get_object_detail', 'get_provenance_timeline',
+  'submit_evidence', 'submit_context_claim', 'check_submission',
+]);
+
+const KNOWN = new Set([...CURATOR_ONLY, ...COMMUNITY_TOOLS]);
+
+function invalid(field: string, reason: string, recovery: string) {
+  return Response.json({ outcome: 'invalid', field, reason, recovery }, { status: 400 });
+}
+
+const NO_OBJECT = ['object_id', 'No object with that id is in this collection.', 'Call search_collection to list valid object ids.'] as const;
+
+/** Public shape of a submission. Bodies of restricted material are withheld. */
+function publicSubmission(row: SubmissionRow) {
+  const withheld = row.consent === 'private' || row.consent === 'research_only';
+  return {
+    id: row.id, object_id: row.object_id, kind: row.kind, title: row.title,
+    contributor: row.source, consent: row.consent, status: row.status,
+    requested_outcome: row.requested_outcome, authority: 'submitted' as Authority,
+    description: withheld ? null : row.description,
+    quotable: !withheld,
+    created_at: row.created_at,
+  };
+}
+
+function refsFrom(args: Record<string, unknown>, objectId: string) {
+  const ids = Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [];
+  const known = evidenceFor(objectId);
+  return ids.map((id) => {
+    const found = known.find((item) => item.id === id);
+    return {
+      authority: (found?.authority ?? 'submitted') as Authority,
+      consent: (found?.consent ?? 'public_attributed') as Consent,
+      visibility: 'public' as Visibility,
+    };
+  });
+}
+
+export async function POST(request: Request, { params }: { params: Promise<{ name: string }> }) {
+  const { name } = await params;
+  const { role, museumId } = sessionFromRequest(request);
+
+  if (!KNOWN.has(name)) return Response.json({ error: 'Unknown tool' }, { status: 404 });
+  if (CURATOR_ONLY.has(name) && role !== 'curator') {
+    return Response.json({ outcome: 'denied', risk: 'LOW', reason: 'Curator role required.', recovery: 'Switch to the curator workspace.' }, { status: 403 });
+  }
+
+  const args = await request.json().catch(() => ({})) as Record<string, unknown>;
+  const objectId = typeof args.object_id === 'string' ? args.object_id : '';
+
+  switch (name) {
+    /* ------------- Community: discovery ------------- */
+    case 'search_collection': {
+      const matches = searchCollection(typeof args.query === 'string' ? args.query : '');
+      return Response.json({
+        query: args.query ?? null,
+        count: matches.length,
+        objects: matches.map(({ id, title, date, region, gap, status }) => ({ id, title, date, region, gap, status })),
+      });
+    }
+
+    case 'get_object_detail': {
+      const record = objectRecord(objectId);
+      if (!record) return invalid(...NO_OBJECT);
+      const submissions = await listSubmissions(museumId, { objectId });
+      return Response.json({
+        object: {
+          id: record.id, title: record.title, accession: record.accession, date: record.date,
+          material: record.material, region: record.region, status: record.status,
+          gap: record.gap, label: record.label, questions: record.questions, version: record.version,
+        },
+        contribution_count: submissions.length,
+      });
+    }
+
+    case 'get_provenance_timeline':
+    case 'build_provenance_timeline': {
+      const record = objectRecord(objectId);
+      if (!record) return invalid(...NO_OBJECT);
+      const body = {
+        object_id: record.id,
+        events: record.timeline,
+        gaps: record.timeline.filter((event) => event.gap).map((event) => ({ period: event.year, detail: event.detail })),
+        unanswered_questions: record.questions,
+      };
+      if (name === 'get_provenance_timeline') return Response.json(body);
+      return Response.json({
+        ...body,
+        note: 'Working timeline only. The official record is unchanged.',
+        ...evaluatePolicy({ actor: 'curator', action: 'draft_label', museumMatch: true }),
+      });
+    }
+
+    /* ------------- Community: contribution ------------- */
+    case 'submit_evidence':
+    case 'submit_context_claim': {
+      const record = objectRecord(objectId);
+      if (!record) return invalid(...NO_OBJECT);
+      const claim = typeof args.claim === 'string' ? args.claim.trim() : '';
+      const title = typeof args.title === 'string' && args.title.trim() ? args.title.trim() : claim.slice(0, 80);
+      if (!title) return invalid(name === 'submit_evidence' ? 'title' : 'claim', 'A contribution needs a short title or claim.', 'Describe the material in one line.');
+
+      const policy = evaluatePolicy({ actor: 'community', action: 'submit_evidence', museumMatch: true });
+      const id = `SUB-${Math.floor(1100 + Math.random() * 8000)}`;
+      const db = await ensureDatabase(museumId);
+      await db.prepare('INSERT INTO submissions (id,museum_id,object_id,kind,title,description,source,consent,requested_outcome,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+        .bind(id, museumId, record.id, name === 'submit_evidence' ? 'Evidence' : 'Context claim', title,
+          String(args.description ?? args.claim ?? ''), String(args.source ?? 'Community agent'),
+          typeof args.consent === 'string' ? args.consent : 'research_only',
+          String(args.requested_outcome ?? 'Add context'), 'received', Date.now()).run();
+      await recordActivity(museumId, 'Community Agent', 'submitted new evidence', title);
+      return Response.json({ ...policy, submission_id: id, object_id: record.id, authority: 'submitted', status: 'received' });
+    }
+
+    case 'check_submission': {
+      const id = typeof args.submission_id === 'string' ? args.submission_id : '';
+      const row = id ? await getSubmission(museumId, id) : null;
+      if (!row) return invalid('submission_id', 'No contribution with that id exists in this workspace.', 'Use the id returned by submit_evidence.');
+      return Response.json({
+        id: row.id, status: row.status, object_id: row.object_id, consent: row.consent,
+        requested_outcome: row.requested_outcome,
+        message: row.status === 'needs information'
+          ? 'A curator asked a follow-up question about this contribution.'
+          : 'Source and consent review is next. The public record has not changed.',
+      });
+    }
+
+    /* ------------- Curator: insight ------------- */
+    case 'get_collection_summary': {
+      const [summary, recent] = await Promise.all([workspaceSummary(museumId), listActivity(museumId, 5)]);
+      return Response.json({ ...summary, recent_activity: recent.map((a) => ({ actor: a.actor, action: a.action, detail: a.detail })) });
+    }
+
+    case 'list_objects': {
+      const status = typeof args.status === 'string' ? args.status.toLowerCase() : '';
+      const objects = collection.filter((item) => !status || item.status.toLowerCase().includes(status));
+      const perObject = await Promise.all(objects.map((item) => listSubmissions(museumId, { objectId: item.id })));
+      return Response.json({
+        count: objects.length,
+        objects: objects.map((item, i) => ({
+          id: item.id, title: item.title, accession: item.accession, status: item.status, gap: item.gap,
+          new_submissions: perObject[i].filter((s) => s.status === 'received').length,
+        })),
+      });
+    }
+
+    case 'list_submissions': {
+      const rows = await listSubmissions(museumId, {
+        status: typeof args.status === 'string' ? args.status : undefined,
+        objectId: typeof args.object_id === 'string' ? args.object_id : undefined,
+      });
+      return Response.json({ count: rows.length, submissions: rows.map(publicSubmission), untrusted_content: true });
+    }
+
+    case 'get_review_case':
+    case 'compare_evidence': {
+      const caseId = typeof args.case_id === 'string' ? args.case_id
+        : Array.isArray(args.evidence_ids) && args.evidence_ids.length ? String(args.evidence_ids[0]) : '';
+      const row = caseId ? await getSubmission(museumId, caseId) : null;
+      if (!row) return invalid(name === 'get_review_case' ? 'case_id' : 'evidence_ids', 'No review case with that id exists in this workspace.', 'Call list_submissions to list open cases.');
+      const record = objectRecord(row.object_id);
+      const verified = evidenceFor(row.object_id).filter((item) => item.authority === 'verified');
+      return Response.json({
+        case_id: row.id,
+        object: record && { id: record.id, title: record.title, label: record.label, gap: record.gap },
+        submitted: publicSubmission(row),
+        verified_evidence: verified,
+        conflicts: verified.length
+          ? ['The current label implies clear prior custody, but the 1968 invoice names no prior owner.']
+          : ['No verified counterpart is on file for this object yet.'],
+        open_questions: record?.questions ?? [],
+        consent_restrictions: row.consent === 'research_only' || row.consent === 'private'
+          ? ['This material may inform review but cannot be quoted in public output.'] : [],
+        untrusted_content: true,
+      });
+    }
+
+    case 'draft_label': {
+      const record = objectRecord(objectId);
+      if (!record) return invalid(...NO_OBJECT);
+      const evidence = evidenceFor(record.id);
+      const verified = evidence.filter((item) => item.authority === 'verified');
+      const submitted = evidence.filter((item) => item.authority === 'submitted');
+      return Response.json({
+        object_id: record.id,
+        draft: record.gap
+          ? `${record.title} is documented from ${record.date}. Its movement between ${record.gap} remains under joint research.`
+          : `${record.title}, ${record.date}. ${record.material}.`,
+        assertions: [
+          ...(verified.length ? [{ mode: 'verified_fact', text: 'Acquisition is documented in the museum record.', refs: verified.map((item) => item.id) }] : []),
+          ...(submitted.length ? [{ mode: 'attributed_claim', text: 'Community material places the object earlier than the museum record.', refs: submitted.map((item) => item.id) }] : []),
+          ...(record.gap ? [{ mode: 'open_question', text: `Custody between ${record.gap} is unresolved.`, refs: evidence.map((item) => item.id) }] : []),
+        ],
+        published: false,
+        note: 'Draft only. Publishing requires propose_label_update and a human curator.',
+      });
+    }
+
+    /* ------------- Curator: consequential ------------- */
+    case 'request_clarification': {
+      const id = typeof args.submission_id === 'string' ? args.submission_id : '';
+      const question = typeof args.question === 'string' ? args.question.trim() : '';
+      if (!question) return invalid('question', 'A clarification needs a question.', 'Ask about date, place, source, or consent scope.');
+      const row = id ? await getSubmission(museumId, id) : null;
+      if (!row) return invalid('submission_id', 'No contribution with that id exists in this workspace.', 'Call list_submissions to list open contributions.');
+      await setSubmissionStatus(museumId, id, 'needs information');
+      await recordActivity(museumId, 'Curator Agent', 'requested clarification', `${row.title} · ${question}`);
+      return Response.json({
+        ...evaluatePolicy({ actor: 'curator', action: 'request_clarification', museumMatch: true }),
+        submission_id: id, status: 'needs information',
+      });
+    }
+
+    case 'propose_label_update': {
+      const record = objectRecord(objectId);
+      if (!record) return invalid(...NO_OBJECT);
+      const draft = typeof args.draft === 'string' ? args.draft.trim() : '';
+      if (!draft) return invalid('draft', 'A proposal needs the label text it would publish.', 'Call draft_label first, then propose the text it returns.');
+
+      const policy = evaluatePolicy({ actor: 'curator', action: 'publish_label', museumMatch: true, refs: refsFrom(args, record.id), publicOutput: true });
+      if (policy.outcome !== 'pending_approval') {
+        await recordActivity(museumId, 'Policy Gateway', 'denied unsupported official change', policy.reason);
+        return Response.json({ ...policy, escalated_to_curator: true, object_id: record.id, published: false });
+      }
+
+      const approvalId = `APR-${Math.floor(100 + Math.random() * 900)}`;
+      const db = await ensureDatabase(museumId);
+      await db.prepare('INSERT INTO approvals (id,museum_id,object_id,risk,snapshot,snapshot_hash,object_version,status,resolution,created_at,resolved_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+        .bind(approvalId, museumId, record.id, 'HIGH', draft, await sha256(draft), record.version, 'pending', null, Date.now(), null).run();
+      await recordActivity(museumId, 'Curator Agent', 'proposed a label revision', `${record.title} · awaiting human approval`);
+      return Response.json({ ...policy, approval_id: approvalId, object_id: record.id, published: false, next: 'Continue other research; poll check_approval.' });
+    }
+
+    case 'open_return_review': {
+      const record = objectRecord(objectId);
+      if (!record) return invalid(...NO_OBJECT);
+      const policy = evaluatePolicy({ actor: 'curator', action: 'open_return_review', museumMatch: true, refs: refsFrom(args, record.id) });
+      await recordActivity(museumId, 'Curator Agent',
+        policy.outcome === 'pending_approval' ? 'requested a stewardship review' : 'was denied a stewardship review',
+        `${record.title} · ${String(args.basis ?? 'no basis given')}`);
+      return Response.json({
+        ...policy, object_id: record.id, transfers_custody: false,
+        note: 'This opens a human review process only. It does not transfer ownership or move the object.',
+      });
+    }
+
+    /* ------------- Curator: governance ------------- */
+    case 'check_approval': {
+      const id = typeof args.approval_id === 'string' ? args.approval_id : '';
+      const row = id ? await getApproval(museumId, id) : null;
+      if (!row) return invalid('approval_id', 'No approval with that id exists in this workspace.', 'Call list_pending_approvals to list open requests.');
+      return Response.json({
+        id: row.id, status: row.status, resolution: row.resolution, risk: row.risk,
+        object_id: row.object_id, snapshot_hash: row.snapshot_hash, blocking: false,
+      });
+    }
+
+    case 'list_pending_approvals': {
+      const [rows, counts] = await Promise.all([listApprovals(museumId, 'pending'), countByStatus(museumId)]);
+      return Response.json({
+        count: rows.length,
+        approvals: rows.map((row) => ({ id: row.id, risk: row.risk, status: row.status, object_id: row.object_id, object_version: row.object_version })),
+        open_submissions: counts.all,
+        note: 'Polling does not block. Continue other research while a human reviews.',
+      });
+    }
+  }
+
+  return Response.json({ error: 'Unknown tool' }, { status: 404 });
 }

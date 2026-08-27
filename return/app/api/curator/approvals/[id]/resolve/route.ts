@@ -1,3 +1,31 @@
-import { ensureDatabase } from '@/db/setup';
-export async function POST(request:Request,{params}:{params:Promise<{id:string}>}){if(!(request.headers.get('cookie')??'').includes('role=curator'))return Response.json({error:'Curator role required'},{status:403});const{id}=await params;const body=await request.json() as {action?:string;draft?:string};if(!['approved','rejected'].includes(body.action??''))return Response.json({error:'Invalid resolution'},{status:400});try{const db=await ensureDatabase();await db.prepare('INSERT OR REPLACE INTO approvals (id,museum_id,object_id,risk,snapshot,snapshot_hash,object_version,status,resolution,created_at,resolved_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)').bind(id,'museum_demo_01','moonbird-mask','HIGH',body.draft??'',await hash(body.draft??''),3,body.action,body.draft??'',Date.now()-1000,Date.now()).run();await db.prepare('INSERT INTO activity (id,museum_id,actor,action,detail,created_at) VALUES (?,?,?,?,?,?)').bind(crypto.randomUUID(),'museum_demo_01','Mina, Curator',body.action==='approved'?'edited and approved label revision':'rejected label revision','Moonbird Mask · revision 4',Date.now()).run();}catch{return Response.json({id,status:body.action,persisted:false});}return Response.json({id,status:body.action,persisted:true});}
-async function hash(value:string){const data=new TextEncoder().encode(value);const bytes=await crypto.subtle.digest('SHA-256',data);return Array.from(new Uint8Array(bytes)).map(b=>b.toString(16).padStart(2,'0')).join('')}
+import { getApproval, recordActivity } from '@/db/queries';
+import { ensureDatabase, sha256 } from '@/db/setup';
+import { sessionFromRequest } from '@/lib/session';
+
+export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { role, museumId } = sessionFromRequest(request);
+  if (role !== 'curator') return Response.json({ error: 'Curator role required' }, { status: 403 });
+
+  const { id } = await params;
+  const body = await request.json() as { action?: string; draft?: string };
+  if (!['approved', 'rejected'].includes(body.action ?? '')) return Response.json({ error: 'Invalid resolution' }, { status: 400 });
+
+  const approval = await getApproval(museumId, id).catch(() => null);
+  if (!approval) return Response.json({ error: 'Approval not found' }, { status: 404 });
+  if (approval.status !== 'pending') {
+    return Response.json({ outcome: 'denied', policy: 'approval_already_resolved', reason: `This approval was already ${approval.status}.`, recovery: 'Create a new approval request for the current draft.' }, { status: 409 });
+  }
+
+  const draft = body.draft ?? approval.snapshot;
+  const edited = draft !== approval.snapshot;
+  const resolution = body.action === 'approved' ? (edited ? 'approved_with_edit' : 'approved') : 'rejected';
+
+  const db = await ensureDatabase(museumId);
+  await db.prepare('UPDATE approvals SET status=?, resolution=?, snapshot=?, snapshot_hash=?, resolved_at=? WHERE museum_id=? AND id=?')
+    .bind(body.action, resolution, draft, await sha256(draft), Date.now(), museumId, id).run();
+  await recordActivity(museumId, 'Mina, Curator',
+    body.action === 'approved' ? (edited ? 'edited and approved label revision' : 'approved label revision') : 'rejected label revision',
+    `Moonbird Mask · revision ${approval.object_version + 1}`);
+
+  return Response.json({ id, status: body.action, resolution, edited, persisted: true });
+}
