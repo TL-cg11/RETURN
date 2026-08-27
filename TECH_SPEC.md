@@ -153,12 +153,12 @@ propose_label_update  refs=[verified accession, verified photo, reviewed oral]  
 
 | ID | 기능 | 상태 |
 |---|---|---|
-| G1 | **property 위치 어댑터 — `document.modelContext` 우선, `navigator.modelContext`는 legacy fallback** (`document.modelContext ?? navigator.modelContext`), navigator 사용 시 deprecation 경고 | `[⚠ fix]` |
-| G2 | **해제 = AbortController** — 등록별 `AbortController` → `registerTool(spec,{signal})` → unmount·role전환·재등록 전 `abort()` | `[⚠ fix]` |
+| G1 | **property 위치 어댑터 — `document.modelContext` 우선, `navigator.modelContext`는 legacy fallback** (`document.modelContext ?? navigator.modelContext`), navigator 사용 시 deprecation 경고 | `[✓ built]` |
+| G2 | **해제 = AbortController** — 등록별 `AbortController` → spec에 `signal` 동봉 → unmount·role전환·재등록 전 `abort()` | `[✓ built]` |
 | G3 | **역할 조건부 등록** — community 페이지는 curator tool을 절대 `registerTool()` 하지 않음(등록 + 서버검증 이중 방어) | `[✓ built]` |
 | G4 | **context는 description에 baked-in** — `provideContext()`/`clearContext()`는 제거됨, 명세·타입에서 완전 제외 | `[✓ built]` |
 | G5 | **Annotation** read=`readOnlyHint:true`, write=`false`, submitted 반환 tool=`untrustedContentHint:true` | `[✓ built]` |
-| G6 | **크기·형식 제약** name ≤30자, description ≤500자, param description ≤150자, output ~1.5K자(ID/요약/ref 반환) | `[~ stub]` |
+| G6 | **크기·형식 제약** name ≤30자, description ≤500자, param description ≤150자(전 파라미터 필수), 단건 output ~1.5K자(ID/요약/ref 반환), 목록 output은 페이지 크기에 유계 | `[✓ built]` |
 | G7 | **thin client** execute는 내부 API fetch만, 중복 등록 방지, feature detection | `[✓ built]` |
 
 **검증된 사실(2026-08 기준 웹 검색):**
@@ -166,7 +166,9 @@ propose_label_update  refs=[verified accession, verified photo, reviewed oral]  
 - WebMCP에 **`unregisterTool()` 메서드는 없다.** 유일한 정식 해제 경로는 등록 시 `AbortSignal` 전달 후 `abort()`.
 - `provideContext()`/`clearContext()`는 2026-03-05 draft에서 제거됨.
 
-**G2 교정 필요(⚠):** 현재 `register.ts:29`는 존재하지 않는 `context.unregisterTool?.()`를 호출한다. optional-chaining 때문에 **조용히 no-op**이 되어, role 전환 시 이전 역할의 도구가 잔존/중복 등록될 수 있다 → AbortController로 교체.
+**G2 구현 노트:** `registerTool`에 넘기는 spec에 `signal`을 동봉하고, cleanup이 `abort()`한다. 다만 **abort는 응답이 없는 요청**이라 브라우저가 실제로 해제했는지 확인할 방법이 없다. 따라서 등록된 이름을 재등록 가능 상태로 되돌리는 것은 그 브라우저가 구형 `unregisterTool`도 함께 제공할 때로 한정한다. 이름을 붙들면 등록 한 번을 건너뛰는 비용이고, 잘못 풀면 다음 마운트에서 `InvalidStateError: Duplicate tool name`이 발생해 React commit이 통째로 무너진다.
+
+**측정 기록:** 이 항목을 착수할 때 `register.ts`는 이미 명시적 guard로 재작성돼 있었고(조용한 no-op 아님), 역할 전환이 전체 페이지 로드라 새 ModelContext를 받으므로 **실제 도구 잔존은 발생하지 않는 상태였다.** G2는 버그 수정이 아니라 스펙 정합성 작업이었다.
 
 ---
 

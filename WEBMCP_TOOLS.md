@@ -56,7 +56,11 @@
 - **거부:** `{ status:"denied", risk, policy, message, next, escalation_id?, retryable, request_id }`
 - **입력오류:** `{ status:"invalid", field, message, next, retryable:true, request_id }`
 - **모든 non-success에 `next` 필수.** `next`는 `{ tool?, args_patch?, human? }`로 다음 행동을 구조적으로 제시한다.
-- 출력 ~1.5K자 이내: 긴 본문 대신 ID·요약·`refs` 반환. 원문은 `get_evidence_detail`로 별도 조회.
+- **출력 예산은 응답 종류에 따라 둘로 나뉜다.**
+  - **단건 응답**(하나의 record를 읽는 툴): **~1.5K자 이내.** 긴 본문 대신 ID·요약·`refs` 반환. 원문은 별도 조회.
+  - **목록 응답**(`list_*`): 절대 크기가 아니라 **페이지 크기에 유계**여야 한다. 즉 응답 크기는 `limit`에 비례하고, workspace에 레코드가 몇 건 쌓였는지와 무관해야 한다.
+- **왜 목록을 예외로 두는가:** 이 예산이 막으려는 것은 "응답이 큰 것"이 아니라 **"응답이 통제 불능으로 커지는 것"**이다. 실측하면 triage에 필요한 최소 필드만 남겨도 목록 한 행이 약 230자이므로, 1.5K에는 5~6행밖에 담기지 않는다. §3.2·§3.3이 정한 기본값과 산술적으로 양립할 수 없다. 유계성을 강제하면 workspace가 900건이 되어도 응답 크기는 그대로이므로 원래 의도는 달성된다.
+- 목록 툴은 `count`(전체)와 `returned`(이번 페이지)를 함께 반환하고, 잘렸다면 `next`로 좁히는 방법을 제시한다.
 
 ### 1.5 정책 바인딩 (전 툴 공통)
 모든 툴은 서버에서 순서대로 통과한다: **schema → role → tenancy → record 존재 → risk → consent/visibility → assertion×authority → justification provenance → (HIGH시) immutable snapshot → activity log.** (TECH_SPEC §D)
@@ -163,7 +167,7 @@
     "has_new_submissions":{"type":"boolean"},
     "review_status":{"enum":["none","open","pending_approval","resolved"]},
     "visibility":{"enum":["public","restricted","sealed"]},
-    "limit":{"type":"integer","minimum":1,"maximum":100,"default":50} } }
+    "limit":{"type":"integer","minimum":1,"maximum":100,"default":20} } }
 ```
 
 ### 3.3 `list_submissions` — LOW · read · **trust:untrusted**
@@ -173,9 +177,11 @@
     "status":{"enum":["received","needs_information","under_review","linked_to_record","closed"]},
     "evidence_type":{"type":"string","maxLength":40},
     "requested_outcome":{"type":"string","maxLength":40},
-    "limit":{"type":"integer","minimum":1,"maximum":100,"default":50} } }
+    "limit":{"type":"integer","minimum":1,"maximum":100,"default":20} } }
 ```
-- 반환 community 콘텐츠는 외부 제출물이므로 응답에 `trust:"untrusted"`, compat `untrustedContentHint:true`. 본문은 요약, 원문은 `get_evidence_detail`.
+- 반환 community 콘텐츠는 외부 제출물이므로 응답에 `trust:"untrusted"`, compat `untrustedContentHint:true`.
+- **목록 행은 본문을 싣지 않는다.** triage에 필요한 것만 반환한다: `id`, `object_id`, `kind`, `title`, `consent`, `status`, `quotable`, `authority`, `created_at`. 원문은 `get_review_case`(카탈로그상 `get_evidence_detail`)로 읽는다. 본문을 아예 담지 않으므로 consent 제한이 목록을 통해 샐 수 없다.
+- 기본 `limit`은 **20**이다(§1.4의 유계성 규칙). 20행이 약 4.5K, 50행이면 약 11K가 되어 §1.4의 단건 예산과 혼동되기 쉬우므로, 목록은 유계성으로만 판정한다.
 
 ### 3.4 `get_review_case` — LOW · read · **trust:untrusted**
 ```jsonc

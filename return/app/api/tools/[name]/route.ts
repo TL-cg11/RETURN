@@ -66,6 +66,20 @@ function publicSubmission(row: SubmissionRow) {
   };
 }
 
+/**
+ * The triage shape: what a curator needs to decide which contribution to open,
+ * and nothing else. Bodies are read in full through `get_review_case`, which is
+ * what the catalogue means by returning ids and summaries rather than text.
+ */
+function listedSubmission(row: SubmissionRow) {
+  const withheld = row.consent === 'private' || row.consent === 'research_only';
+  return {
+    id: row.id, object_id: row.object_id, kind: row.kind, title: row.title,
+    consent: row.consent, status: row.status, quotable: !withheld,
+    authority: 'submitted' as Authority, created_at: row.created_at,
+  };
+}
+
 async function refsFrom(museumId: string, args: Record<string, unknown>, objectId: string) {
   const ids = Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [];
   // Policy enforcement may inspect sealed metadata, but sealed records are never
@@ -222,7 +236,20 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
         status: typeof args.status === 'string' ? args.status : undefined,
         objectId: typeof args.object_id === 'string' ? args.object_id : undefined,
       });
-      return Response.json({ count: rows.length, submissions: rows.map(publicSubmission), untrusted_content: true });
+      // A triage list has to stay readable as a workspace fills up. Bodies are
+      // excerpted here and read in full through get_review_case, which is the
+      // output budget the tool catalogue asks for.
+      const limit = Math.min(Math.max(Number(args.limit) || 20, 1), 100);
+      const page = rows.slice(0, limit);
+      return Response.json({
+        count: rows.length,
+        returned: page.length,
+        submissions: page.map(listedSubmission),
+        untrusted_content: true,
+        ...(rows.length > page.length
+          ? { next: `Showing ${page.length} of ${rows.length}. Narrow with status or object_id, or raise limit.` }
+          : {}),
+      });
     }
 
     case 'get_review_case':
