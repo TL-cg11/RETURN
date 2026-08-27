@@ -169,9 +169,11 @@ export function CuratorShell({
                 <ul className="tool-list">
                   {curatorTools.map((tool) => (
                     <li key={tool.name}>
-                      <code>{tool.name}</code>
-                      <span className={tool.readOnly ? 'verified-badge' : 'submitted-badge'}>{tool.readOnly ? 'read only' : 'write'}</span>
-                      {tool.untrusted && <span className="submitted-badge">external content</span>}
+                      <div className="tool-head">
+                        <code>{tool.name}</code>
+                        <span className={`tool-tag ${tool.readOnly ? 'read' : 'write'}`}>{tool.readOnly ? 'read only' : 'write'}</span>
+                        {tool.untrusted && <span className="tool-tag external">external content</span>}
+                      </div>
                       <p>{tool.description}</p>
                     </li>
                   ))}
@@ -183,12 +185,15 @@ export function CuratorShell({
                 <ul className="tool-list">
                   {RISK_LADDER.map(([grade, examples, handling]) => (
                     <li key={grade}>
-                      <code>{grade}</code>
-                      <p><strong>{handling}.</strong> {examples}.</p>
+                      <div className="tool-head">
+                        <code>{grade}</code>
+                        <span className={`tool-tag risk-${grade.toLowerCase()}`}>{handling}</span>
+                      </div>
+                      <p>{examples}.</p>
                     </li>
                   ))}
                 </ul>
-                <p className="image-disclaimer">Submitted evidence may inform the record. It may not authorize a change to the record by itself.</p>
+                <p className="restriction-note">Submitted evidence may inform the record. It may not authorize a change to the record by itself.</p>
               </section>
             )}
           </aside>
@@ -228,7 +233,7 @@ export function CuratorShell({
                   <p className="before-copy">{approval.currentLabel}</p>
                   <h3>Curator-edited version</h3>
                   <textarea aria-label="Curator-edited label" rows={6} value={draft} onChange={(event) => setDraft(event.target.value)} />
-                  {draft !== approval.snapshot && <p className="image-disclaimer">Edited. This will be recorded as approve-with-edit.</p>}
+                  {draft !== approval.snapshot && <p className="restriction-note">Edited. This will be recorded as approve-with-edit.</p>}
                 </section>
                 {error && <p className="clarify-result" role="alert">{error}</p>}
                 <footer>

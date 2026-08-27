@@ -8,7 +8,7 @@
  * Usage: node scripts/smoke.mjs [baseUrl]
  */
 
-const base = (process.argv[2] ?? 'http://localhost:5173').replace(/\/$/, '');
+const base = (process.argv[2] ?? 'http://localhost:3000').replace(/\/$/, '');
 
 const OBJECT_IDS = [
   'moonbird-mask', 'riverstone-vessel', 'woven-signal-cloth', 'tide-listening-stone',
@@ -241,6 +241,12 @@ async function main() {
   await setRole('curator');
   const freshSubmissions = await tool('list_submissions', {});
   check('the fresh workspace does not carry over test contributions', !freshSubmissions.json?.submissions?.some((s) => s.id === submissionId));
+  // Seeded ids must be unique per workspace, or a reset leaves an empty museum.
+  check('the fresh workspace is seeded with the demo record', freshSubmissions.json?.count === 3, `count ${freshSubmissions.json?.count}`);
+  const freshApprovals = await tool('list_pending_approvals', {});
+  check('the fresh workspace has its own pending approval', freshApprovals.json?.count === 1, `count ${freshApprovals.json?.count}`);
+  const freshSummary = await tool('get_collection_summary', {});
+  check('the fresh workspace has seeded activity', (freshSummary.json?.recent_activity?.length ?? 0) > 0);
 
   /* ---------- report ---------- */
   const failed = results.filter((r) => !r.ok);

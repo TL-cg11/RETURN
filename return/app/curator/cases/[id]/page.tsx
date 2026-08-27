@@ -43,7 +43,7 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
             <span className="comparison-count">{counterpart ? 2 : 1} {counterpart ? 'sources' : 'source'}</span>
           </header>
 
-          <div className="evidence-bridge">
+          <div className={counterpart ? 'evidence-bridge' : 'evidence-bridge single'}>
             <article className="evidence-card community">
               <div className="evidence-preview photo"><span>{submission.kind}</span><i /></div>
               <div className="evidence-card-head"><span className="submitted-badge">Submitted</span><small>{submission.id}</small></div>
@@ -55,7 +55,7 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
                 <div><dt>Received</dt><dd>{relativeTime(submission.created_at)}</dd></div>
               </dl>
               {submission.description && <blockquote>{submission.description}<cite>As submitted</cite></blockquote>}
-              {restricted && <p className="image-disclaimer">Internal review only — this material may not be quoted in public output.</p>}
+              {restricted && <p className="restriction-note">Internal review only — this material may not be quoted in public output.</p>}
             </article>
 
             {counterpart ? (

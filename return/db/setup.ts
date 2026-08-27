@@ -9,7 +9,16 @@ const HOUR = 60 * MINUTE;
 const submissionAge = [18 * MINUTE, 26 * HOUR, 50 * HOUR];
 const activityAge = [18 * MINUTE, 14 * MINUTE, 11 * MINUTE, 8 * MINUTE, 3 * MINUTE];
 
-export const PENDING_APPROVAL_ID = 'APR-004';
+/**
+ * Seeded rows need ids that are unique across workspaces: `submissions.id` and
+ * `approvals.id` are primary keys, so a fixed demo id would be claimed by the
+ * first workspace and silently ignored by every later one, leaving a reset
+ * workspace empty. A short token derived from the museum id keeps them
+ * readable and distinct.
+ */
+function workspaceToken(museumId: string) {
+  return museumId.replace(/[^a-z0-9]/gi, '').slice(-4).toUpperCase();
+}
 
 export const proposedDraft =
   'The mask appears in a 1959 community photograph from Aru village. Its movement and acquisition circumstances from 1959 to 1968 remain under joint research.';
@@ -34,16 +43,17 @@ async function createTables(d1: D1Database) {
 /** Populate a workspace with the fictional starting record. Runs once per museum id. */
 export async function seedWorkspace(d1: D1Database, museumId: string) {
   const now = Date.now();
+  const token = workspaceToken(museumId);
   const statements = [
     d1.prepare('INSERT OR IGNORE INTO museums (id,name,created_at) VALUES (?,?,?)').bind(museumId, 'The Halcyon Museum of Material Memory', now),
     ...seedSubmissions.map((s, i) =>
       d1.prepare('INSERT OR IGNORE INTO submissions (id,museum_id,object_id,kind,title,description,source,consent,requested_outcome,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-        .bind(s.id, museumId, s.objectId, s.kind, s.title, s.note, s.contributor, s.consent, s.requested, s.status, now - (submissionAge[i] ?? HOUR))),
+        .bind(`${s.id}-${token}`, museumId, s.objectId, s.kind, s.title, s.note, s.contributor, s.consent, s.requested, s.status, now - (submissionAge[i] ?? HOUR))),
     ...activities.map((a, i) =>
       d1.prepare('INSERT OR IGNORE INTO activity (id,museum_id,actor,action,detail,created_at) VALUES (?,?,?,?,?,?)')
         .bind(`${museumId}-seed-${i}`, museumId, a.actor, a.action, a.detail, now - (activityAge[i] ?? MINUTE))),
     d1.prepare('INSERT OR IGNORE INTO approvals (id,museum_id,object_id,risk,snapshot,snapshot_hash,object_version,status,resolution,created_at,resolved_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-      .bind(PENDING_APPROVAL_ID, museumId, 'moonbird-mask', 'HIGH', proposedDraft, await sha256(proposedDraft), moonbird.version, 'pending', null, now - 3 * MINUTE, null),
+      .bind(`APR-004-${token}`, museumId, 'moonbird-mask', 'HIGH', proposedDraft, await sha256(proposedDraft), moonbird.version, 'pending', null, now - 3 * MINUTE, null),
   ];
   await d1.batch(statements);
 }

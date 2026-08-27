@@ -43,9 +43,12 @@ export default async function SubmissionsPage({ searchParams }: { searchParams: 
             {name.charAt(0).toUpperCase() + name.slice(1)} <b>{counts[name]}</b>
           </Link>
         ))}
-        <span />
+      </div>
+
+      <div className="object-filter-bar">
+        <span className="object-filter-label">Object</span>
         <nav className="object-filter" aria-label="Filter by object">
-          <Link className={activeObject ? '' : 'active'} href={queryFor(active, undefined)}>All objects</Link>
+          <Link className={activeObject ? '' : 'active'} href={queryFor(active, undefined)}>All</Link>
           {collection.map((item) => (
             <Link className={activeObject === item.id ? 'active' : ''} href={queryFor(active, item.id)} key={item.id}>{item.title}</Link>
           ))}
