@@ -280,3 +280,27 @@ a { color:inherit; text-decoration:none; }
 .evidence-bridge.single .bridge-gap { text-align:left; padding-left:1.2rem; }
 .bridge-gap span { display:block; word-break:normal; }
 @media(max-width:1100px){ .evidence-bridge.single { grid-template-columns:1fr; } .evidence-bridge.single .bridge-gap { text-align:center; padding-left:0; } }
+.escalation-panel { border-top:1px solid var(--console); border-left:3px solid var(--oxide); padding:1.3rem 0 .4rem 1.3rem; margin-bottom:3rem; background:rgba(163,62,47,.028); }
+.escalation-panel>header { display:flex; justify-content:space-between; align-items:flex-end; gap:2rem; margin-bottom:.9rem; padding-right:1.3rem; }
+.escalation-panel h2 { font:400 1.55rem/1.15 Georgia,serif; margin:.15rem 0 0; }
+.escalation-panel>header>p { margin:0; max-width:36ch; color:#6f7370; font-size:.66rem; line-height:1.5; }
+.escalation-card { display:grid; grid-template-columns:96px minmax(0,1fr) 178px 68px 168px; gap:.9rem; align-items:center; min-height:66px; border-top:1px solid var(--console-line); padding-right:1.3rem; }
+.escalation-mark { font:500 .55rem var(--font-geist-mono); color:var(--oxide); letter-spacing:.04em; }
+.escalation-card div strong { display:block; font:400 .93rem/1.35 Georgia,serif; }
+.escalation-card div small { display:block; color:#7b7e7a; font-size:.58rem; margin-top:.25rem; }
+.policy-code { justify-self:start; font:500 .55rem var(--font-geist-mono); text-transform:uppercase; letter-spacing:.06em; color:var(--oxide); border:1px solid rgba(163,62,47,.35); padding:.2rem .45rem; }
+.escalation-card time { color:#8b8d89; font-size:.55rem; }
+.escalation-open { font-size:.6rem; border-bottom:1px solid; justify-self:end; }
+/* The four fixed columns plus the resolve buttons cost ~570px, which starves the
+   reason text long before the usual 900px breakpoint. Measured: at 1152 the reason
+   column falls to 213px and wraps to three lines, so stack at 1200px instead. */
+@media (max-width:1200px){ .escalation-card { grid-template-columns:1fr; gap:.35rem; padding:.85rem 1.3rem .85rem 0; } .escalation-open,.policy-code { justify-self:start; } .escalation-panel>header { flex-direction:column; align-items:flex-start; gap:.5rem; } }
+.escalation-more { margin:.7rem 0 .2rem; color:#7b7e7a; font-size:.6rem; }
+.escalation-close { display:flex; flex-direction:column; align-items:flex-end; gap:.35rem; }
+.escalation-actions { display:flex; gap:.5rem; align-items:center; }
+.escalation-actions button { background:none; border:1px solid rgba(163,62,47,.4); color:var(--oxide); font:inherit; font-size:.58rem; padding:.25rem .5rem; cursor:pointer; }
+.escalation-actions button:hover:not(:disabled) { background:rgba(163,62,47,.08); }
+.escalation-actions button.quiet { border-color:var(--console-line); color:#7b7e7a; }
+.escalation-actions button:disabled { opacity:.5; cursor:default; }
+.escalation-actions p { margin:0; color:var(--oxide); font-size:.55rem; }
+@media (max-width:1200px){ .escalation-close { align-items:flex-start; } }

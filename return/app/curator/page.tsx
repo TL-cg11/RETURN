@@ -1,6 +1,7 @@
 import { NavLink as Link } from '@/components/shared/nav-link';
-import { listActivity, listSubmissions, workspaceSummary } from '@/db/queries';
+import { countEscalations, listActivity, listEscalations, listSubmissions, workspaceSummary } from '@/db/queries';
 import { ApprovalTrigger } from '@/components/curator/approval-trigger';
+import { EscalationActions } from '@/components/curator/escalation-actions';
 import { collectionFor } from '@/lib/records';
 import { relativeTime, sessionFromCookies } from '@/lib/session';
 
@@ -8,13 +9,27 @@ export const dynamic = 'force-dynamic';
 
 const pad = (value: number) => String(value).padStart(2, '0');
 
+/** Plain-language rendering of a policy code. The card must explain, not just label. */
+const POLICY_REASON: Record<string, string> = {
+  submitted_sole_authority: 'Submitted evidence cannot be the sole authority for an official change.',
+  visibility_restricted: 'Restricted or sealed material cannot appear in public output.',
+  consent_not_public: 'The evidence consent does not permit public quotation.',
+};
+
+function sourceRefs(raw: string) {
+  try { const parsed: unknown = JSON.parse(raw); return Array.isArray(parsed) ? parsed.map(String) : []; }
+  catch { return []; }
+}
+
 export default async function CuratorDashboard() {
   const { museumId } = await sessionFromCookies();
-  const [summary, submissions, activity, collection] = await Promise.all([
+  const [summary, submissions, activity, collection, escalations, escalationTotal] = await Promise.all([
     workspaceSummary(museumId),
     listSubmissions(museumId),
     listActivity(museumId, 5),
     collectionFor(museumId, 'curator'),
+    listEscalations(museumId, 'open', 5),
+    countEscalations(museumId, 'open'),
   ]);
   const queue = submissions.slice(0, 5);
 
@@ -34,6 +49,37 @@ export default async function CuratorDashboard() {
         <ApprovalTrigger><span>Pending approvals</span><strong>{pad(summary.pending_approvals)}</strong><small>Official label revision</small><i>→</i></ApprovalTrigger>
         <Link href="/curator/submissions"><span>Access &amp; consent</span><strong>{pad(summary.consent_alerts)}</strong><small>Not quotable in public output</small><i>!</i></Link>
       </section>
+
+      {escalations.length > 0 && (
+        <section className="escalation-panel">
+          <header>
+            <div><p className="console-eyebrow">Referred to you</p><h2>The gateway refused {escalationTotal === 1 ? 'an action' : `${escalationTotal} actions`}</h2></div>
+            <p>An agent stopped short of the official record and handed the question over. Nothing was published.</p>
+          </header>
+          {escalations.map((item) => (
+            <article className="escalation-card" key={item.id}>
+              <div className="escalation-mark">{item.id}</div>
+              <div>
+                <strong>{POLICY_REASON[item.policy] ?? 'The action was refused by policy.'}</strong>
+                <small>
+                  {collection.find((object) => object.id === item.object_id)?.title ?? item.object_id ?? 'This workspace'}
+                  {' · '}{item.tool.replaceAll('_', ' ')}
+                  {sourceRefs(item.source_refs).length > 0 && ` · cites ${sourceRefs(item.source_refs).join(', ')}`}
+                </small>
+              </div>
+              <span className="policy-code">{item.policy.replaceAll('_', ' ')}</span>
+              <time>{relativeTime(item.created_at)}</time>
+              <div className="escalation-close">
+                {item.object_id && <Link className="escalation-open" href={`/objects/${item.object_id}`}>Open record →</Link>}
+                <EscalationActions escalationId={item.id} />
+              </div>
+            </article>
+          ))}
+          {escalationTotal > escalations.length && (
+            <p className="escalation-more">Showing the {escalations.length} most recent of {escalationTotal} open referrals.</p>
+          )}
+        </section>
+      )}
 
       <div className="dashboard-columns">
         <section className="work-queue">

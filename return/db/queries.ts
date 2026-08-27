@@ -19,6 +19,11 @@ export type ApprovalRow = {
   created_at: number; expires_at: number; resolved_at: number | null;
 };
 
+export type EscalationRow = {
+  id: string; object_id: string | null; tool: string; args: string; policy: string;
+  source_refs: string; status: string; created_at: number; resolved_at: number | null;
+};
+
 export type ActivityMetadata = {
   actorRole?: 'community' | 'curator' | 'curator_ui' | 'system';
   actorType?: 'agent' | 'human' | 'system';
@@ -234,6 +239,52 @@ export async function recordActivity(museumId: string, actor: string, action: st
     .bind(crypto.randomUUID(), museumId, actor, action, detail, Date.now(), metadata.actorRole ?? defaults.actorRole,
       metadata.actorType ?? defaults.actorType, metadata.tool ?? 'system', metadata.target ?? '', metadata.risk ?? 'LOW',
       metadata.policyDecision ?? 'applied', metadata.result ?? 'recorded').run();
+}
+
+/**
+ * Records a refusal that a curator should look at. A denial is not a dead end:
+ * the agent gets an id back and moves on, and the work reappears as a human queue.
+ */
+export async function createEscalation(museumId: string, entry: {
+  objectId?: string | null; tool: string; args: unknown; policy: string; sourceRefs?: string[];
+}) {
+  const db = await ensureDatabase(museumId);
+  const id = `ESC-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+  await db.prepare('INSERT INTO escalations (id,museum_id,object_id,tool,args,policy,source_refs,status,created_at,resolved_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+    .bind(id, museumId, entry.objectId ?? null, entry.tool, JSON.stringify(entry.args ?? {}), entry.policy,
+      JSON.stringify(entry.sourceRefs ?? []), 'open', Date.now(), null).run();
+  return id;
+}
+
+export async function listEscalations(museumId: string, status = 'open', limit = 20) {
+  const db = await ensureDatabase(museumId);
+  const result = await db.prepare('SELECT id,object_id,tool,args,policy,source_refs,status,created_at,resolved_at FROM escalations WHERE museum_id=? AND status=? ORDER BY created_at DESC LIMIT ?')
+    .bind(museumId, status, limit).all<EscalationRow>();
+  return result.results ?? [];
+}
+
+export async function getEscalation(museumId: string, id: string) {
+  const db = await ensureDatabase(museumId);
+  return db.prepare('SELECT id,object_id,tool,args,policy,source_refs,status,created_at,resolved_at FROM escalations WHERE museum_id=? AND id=?')
+    .bind(museumId, id).first<EscalationRow>();
+}
+
+/**
+ * Closes a referral. `reviewed` means the curator took it forward, `dismissed`
+ * means they judged there was nothing to act on — the audit trail keeps the
+ * difference, because who decided what is the point of this record.
+ */
+export async function resolveEscalation(museumId: string, id: string, status: 'reviewed' | 'dismissed') {
+  const db = await ensureDatabase(museumId);
+  await db.prepare('UPDATE escalations SET status=?, resolved_at=? WHERE museum_id=? AND id=?')
+    .bind(status, Date.now(), museumId, id).run();
+}
+
+/** The true total, so a capped list never lets the interface understate the queue. */
+export async function countEscalations(museumId: string, status = 'open') {
+  const db = await ensureDatabase(museumId);
+  const row = await db.prepare('SELECT COUNT(*) AS total FROM escalations WHERE museum_id=? AND status=?').bind(museumId, status).first<{ total: number }>();
+  return row?.total ?? 0;
 }
 
 export async function listApprovals(museumId: string, status?: string) {

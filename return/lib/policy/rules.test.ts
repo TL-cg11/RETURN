@@ -63,3 +63,29 @@ test('44 role is judged before tenancy',()=>{
   assert.equal(result.outcome,'denied');
   assert.match(result.reason,/curator actions/);
 });
+
+/* D2 — a denial carries a machine-readable policy code, and says whether it belongs to a curator. */
+const verdict=(input:PolicyInput)=>evaluatePolicy(input);
+test('45 submitted-only publication names its policy and escalates',()=>{
+  const r=verdict({...base,action:'publish_label',refs:[submitted]});
+  assert.equal(r.policy,'submitted_sole_authority');
+  assert.equal(r.escalate,true);
+});
+test('46 submitted-only return review escalates too',()=>{
+  const r=verdict({...base,action:'open_return_review',refs:[submitted]});
+  assert.equal(r.policy,'submitted_sole_authority');
+  assert.equal(r.escalate,true);
+});
+test('47 a role violation is not curator escalation material',()=>{
+  const r=verdict({...base,actor:'community',action:'publish_label',refs:[verified]});
+  assert.equal(r.policy,'role_not_permitted');
+  assert.notEqual(r.escalate,true);
+});
+test('48 a critical action is refused outright, not escalated',()=>{
+  const r=verdict({...base,action:'delete_evidence'});
+  assert.equal(r.policy,'outside_agent_surface');
+  assert.notEqual(r.escalate,true);
+});
+test('49 an allowed action carries no policy code',()=>{
+  assert.equal(verdict(base).policy,undefined);
+});

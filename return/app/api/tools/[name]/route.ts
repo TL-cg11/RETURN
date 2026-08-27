@@ -1,10 +1,11 @@
 import {
-  countByStatus, getApproval, getEvidenceByIds, getSubmission, listActivity, listApprovals, listObjects, listSubmissions,
-  recordActivity, setSubmissionStatus, workspaceSummary, type SubmissionRow,
+  countByStatus, createEscalation, getApproval, getEvidenceByIds, getSubmission, listActivity, listApprovals, listObjects,
+  listSubmissions, recordActivity, setSubmissionStatus, workspaceSummary, type SubmissionRow,
 } from '@/db/queries';
 import { APPROVAL_TTL_MS, ensureDatabase, sha256 } from '@/db/setup';
 import type { Authority, Consent, EvidenceRecord, LabelAssertion, Visibility } from '@/lib/domain/types';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
+import type { PolicyResult } from '@/lib/policy/types';
 import { evidenceFor, objectRecord, searchCollection } from '@/lib/records';
 import { sessionFromRequest } from '@/lib/session';
 
@@ -26,6 +27,30 @@ function invalid(field: string, reason: string, recovery: string) {
 }
 
 const NO_OBJECT = ['object_id', 'No object with that id is in this collection.', 'Call search_collection to list valid object ids.'] as const;
+
+/**
+ * Turns a refusal into a curator's queue item and gives the agent somewhere to go.
+ * Returns the fields to merge into the denial response; `{}` when the verdict is
+ * not the kind a human should review, so the caller can spread it unconditionally.
+ */
+async function escalate(museumId: string, policy: PolicyResult, entry: {
+  tool: string; objectId: string; args: unknown; sourceRefs: string[]; action: string; next: string;
+}) {
+  if (!policy.escalate) {
+    await recordActivity(museumId, 'Policy Gateway', entry.action, policy.reason, {
+      tool: entry.tool, target: entry.objectId, risk: policy.risk, policyDecision: 'denied', result: policy.policy ?? 'denied',
+    });
+    return { next: entry.next };
+  }
+  const escalationId = await createEscalation(museumId, {
+    objectId: entry.objectId, tool: entry.tool, args: entry.args,
+    policy: policy.policy ?? 'denied', sourceRefs: entry.sourceRefs,
+  });
+  await recordActivity(museumId, 'Policy Gateway', entry.action, policy.reason, {
+    tool: entry.tool, target: entry.objectId, risk: policy.risk, policyDecision: 'denied', result: escalationId,
+  });
+  return { escalation_id: escalationId, escalated_to_curator: true, next: entry.next };
+}
 
 /** Public shape of a submission. Bodies of restricted material are withheld. */
 function publicSubmission(row: SubmissionRow) {
@@ -274,8 +299,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       const refs = await refsFrom(museumId, args, record.id);
       const policy = evaluatePolicy({ actor: 'curator', action: 'publish_label', museumMatch: true, refs, publicOutput: true });
       if (policy.outcome !== 'pending_approval') {
-        await recordActivity(museumId, 'Policy Gateway', 'denied unsupported official change', policy.reason);
-        return Response.json({ ...policy, escalated_to_curator: true, object_id: record.id, published: false });
+        return Response.json({
+          ...policy, object_id: record.id, published: false,
+          ...await escalate(museumId, policy, {
+            tool: 'propose_label_update', objectId: record.id,
+            args: { object_id: record.id, draft, evidence_ids: args.evidence_ids ?? [] },
+            sourceRefs: Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [],
+            action: 'denied unsupported official change',
+            next: 'Compare a verified source, request clarification from the contributor, or continue with other objects.',
+          }),
+        });
       }
 
       const approvalId = `APR-${Math.floor(100 + Math.random() * 900)}`;
@@ -300,12 +333,22 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       const record = await objectRecord(museumId, objectId, 'agent');
       if (!record) return invalid(...NO_OBJECT);
       const policy = evaluatePolicy({ actor: 'curator', action: 'open_return_review', museumMatch: true, refs: await refsFrom(museumId, args, record.id) });
-      await recordActivity(museumId, 'Curator Agent',
-        policy.outcome === 'pending_approval' ? 'requested a stewardship review' : 'was denied a stewardship review',
-        `${record.title} · ${String(args.basis ?? 'no basis given')}`);
+      const basis = String(args.basis ?? 'no basis given');
+      if (policy.outcome === 'pending_approval') {
+        await recordActivity(museumId, 'Curator Agent', 'requested a stewardship review', `${record.title} · ${basis}`, {
+          tool: 'open_return_review', target: record.id, risk: 'HIGH', policyDecision: 'pending_approval', result: 'queued',
+        });
+      }
       return Response.json({
         ...policy, object_id: record.id, transfers_custody: false,
         note: 'This opens a human review process only. It does not transfer ownership or move the object.',
+        ...(policy.outcome === 'pending_approval' ? {} : await escalate(museumId, policy, {
+          tool: 'open_return_review', objectId: record.id,
+          args: { object_id: record.id, basis, evidence_ids: args.evidence_ids ?? [] },
+          sourceRefs: Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [],
+          action: 'was denied a stewardship review',
+          next: 'Attach a verified institutional record, or ask a curator to review the community material first.',
+        })),
       });
     }
 
