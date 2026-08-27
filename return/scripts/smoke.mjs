@@ -201,6 +201,39 @@ async function main() {
   check('open_return_review on submitted-only evidence is denied', returnReview.json?.outcome === 'denied', JSON.stringify(returnReview.json?.outcome));
   check('open_return_review never transfers custody', returnReview.json?.transfers_custody === false);
 
+  /* ---------- 7b. escalation ---------- */
+  section('escalation');
+  check('a denied publication returns an escalation id', typeof soleSubmitted.json?.escalation_id === 'string', JSON.stringify(soleSubmitted.json?.escalation_id));
+  check('a denied publication names its policy code', soleSubmitted.json?.policy === 'submitted_sole_authority', JSON.stringify(soleSubmitted.json?.policy));
+  check('a denied publication offers a next step', typeof soleSubmitted.json?.next === 'string' && soleSubmitted.json.next.length > 0);
+  check('a denied return review also escalates', typeof returnReview.json?.escalation_id === 'string', JSON.stringify(returnReview.json?.escalation_id));
+  const escalationsPage = await get('/curator');
+  check('the curator console shows the open escalation', escalationsPage.text.includes(soleSubmitted.json?.escalation_id ?? ' '));
+  check('the escalation panel renders, not just the activity line', escalationsPage.text.includes('escalation-panel'));
+  check('the escalation card names the policy code', /submitted sole authority/.test(escalationsPage.text));
+  check('the escalation card states nothing was published', /Nothing was published/.test(escalationsPage.text));
+
+  const escalationId = soleSubmitted.json?.escalation_id;
+  await setRole('community');
+  const communityResolve = await post(`/api/curator/escalations/${escalationId}/resolve`, { action: 'reviewed' });
+  check('a community session cannot resolve an escalation', communityResolve.status === 403, `status ${communityResolve.status}`);
+  await setRole('curator');
+
+  const badAction = await post(`/api/curator/escalations/${escalationId}/resolve`, { action: 'whatever' });
+  check('an unknown resolution is rejected', badAction.status === 400, `status ${badAction.status}`);
+  const ghostEscalation = await post('/api/curator/escalations/ESC-000000/resolve', { action: 'reviewed' });
+  check('an unknown escalation is 404', ghostEscalation.status === 404, `status ${ghostEscalation.status}`);
+
+  const resolved = await post(`/api/curator/escalations/${escalationId}/resolve`, { action: 'reviewed', note: 'Opened the record and asked the contributor for the photographer.' });
+  check('a curator can resolve an escalation', resolved.status === 200 && resolved.json?.status === 'reviewed', JSON.stringify(resolved.json));
+  const replayEscalation = await post(`/api/curator/escalations/${escalationId}/resolve`, { action: 'reviewed' });
+  check('a resolved escalation cannot be resolved twice', replayEscalation.status === 409, `status ${replayEscalation.status}`);
+
+  const consoleAfterResolve = await get('/curator');
+  check('the resolved escalation leaves the console', !consoleAfterResolve.text.includes(escalationId));
+  const escalationActivity = await get('/curator/activity');
+  check('the resolution is written to the audit trail', /resolved a policy referral|dismissed a policy referral/.test(escalationActivity.text));
+
   /* ---------- 8. approvals ---------- */
   section('approvals');
   const pending = await tool('list_pending_approvals', {});
