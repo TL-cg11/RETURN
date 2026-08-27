@@ -3,6 +3,7 @@ import {
   listSubmissions, recordActivity, setSubmissionStatus, workspaceSummary, type SubmissionRow,
 } from '@/db/queries';
 import { APPROVAL_TTL_MS, ensureDatabase, sha256 } from '@/db/setup';
+import { buildLabelApprovalSnapshot, canonicalJson } from '@/lib/approval-snapshot';
 import type { Authority, Consent, EvidenceRecord, LabelAssertion, Visibility } from '@/lib/domain/types';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
 import type { PolicyResult } from '@/lib/policy/types';
@@ -314,14 +315,24 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       const approvalId = `APR-${Math.floor(100 + Math.random() * 900)}`;
       const db = await ensureDatabase(museumId);
       const createdAt = Date.now();
-      const evidenceIds = Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [];
+      const evidenceIds = Array.isArray(args.evidence_ids) ? [...new Set(args.evidence_ids.map(String))].sort() : [];
       // Cited evidence only: the published revision must carry the assertions the
       // proposal was judged on, not everything the object happens to hold.
       const cited = (await getEvidenceByIds(museumId, evidenceIds, 'curator')).filter((item) => item.objectId === record.id);
-      const argsSnapshot = JSON.stringify({ tool: 'propose_label_update', object_id: record.id, object_version: record.version, draft, assertions: labelAssertions(record, cited), evidence_refs: evidenceIds });
+      const assertions = labelAssertions(record, cited);
+      const snapshot = buildLabelApprovalSnapshot({
+        objectId: record.id,
+        objectVersion: record.version,
+        draft,
+        justification: String(args.justification ?? ''),
+        evidenceIds,
+        assertions,
+        evidence: cited,
+      });
+      const argsSnapshot = canonicalJson(snapshot);
       await db.prepare('INSERT INTO approvals (id,museum_id,object_id,risk,snapshot,tool,args_snapshot,snapshot_hash,object_version,justification,refs_authority,refs_consent,status,resolution,verdict,edited_body,edit_reason,created_at,expires_at,resolved_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
         .bind(approvalId, museumId, record.id, 'HIGH', draft, 'propose_label_update', argsSnapshot, await sha256(argsSnapshot), record.version,
-          String(args.justification ?? ''), JSON.stringify(refs.map((ref) => ref.authority)), JSON.stringify(refs.map((ref) => ref.consent)),
+          snapshot.args.justification, JSON.stringify(snapshot.evidence_refs.map((ref) => ref.authority)), JSON.stringify(snapshot.evidence_refs.map((ref) => ref.consent)),
           'pending', null, null, null, null, createdAt, createdAt + APPROVAL_TTL_MS, null).run();
       await recordActivity(museumId, 'Curator Agent', 'proposed a label revision', `${record.title} · awaiting human approval`, {
         tool: 'propose_label_update', target: record.id, risk: 'HIGH', policyDecision: 'pending_approval', result: approvalId,

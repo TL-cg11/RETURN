@@ -1,5 +1,6 @@
 import { env } from 'cloudflare:workers';
 import { DEMO_MUSEUM } from '@/lib/session';
+import { buildLabelApprovalSnapshot, canonicalJson } from '@/lib/approval-snapshot';
 import { buildSeedDataset, proposedDraft } from './seed-data';
 
 export { proposedDraft } from './seed-data';
@@ -133,10 +134,20 @@ export async function seedWorkspace(d1: D1Database, museumId: string) {
   // Mirrors what `propose_label_update` would snapshot for this proposal, so the
   // seeded approval publishes a revision with the same assertion structure.
   const seededAssertions = [
-    { mode: 'verified_fact', text: 'Acquisition is documented in the museum record.', refs: ['EV-068'] },
-    { mode: 'open_question', text: 'Custody between 1959–1968 is unresolved.', refs: ['EV-068'] },
+    { mode: 'verified_fact' as const, text: 'Acquisition is documented in the museum record.', refs: ['EV-068'] },
+    { mode: 'open_question' as const, text: 'Custody between 1959–1968 is unresolved.', refs: ['EV-068'] },
   ];
-  const argsSnapshot = JSON.stringify({ draft: proposedDraft, object_id: seed.approval.objectId, object_version: 3, assertions: seededAssertions, evidence_refs: ['EV-068'] });
+  const seededEvidence = seed.evidence.filter((item) => item.id === 'EV-068');
+  const approvalSnapshot = buildLabelApprovalSnapshot({
+    objectId: seed.approval.objectId,
+    objectVersion: 3,
+    draft: proposedDraft,
+    justification: 'Seeded label revision for human review',
+    evidenceIds: ['EV-068'],
+    assertions: seededAssertions,
+    evidence: seededEvidence,
+  });
+  const argsSnapshot = canonicalJson(approvalSnapshot);
   statements.push(d1.prepare('INSERT OR IGNORE INTO approvals (id,museum_id,object_id,risk,snapshot,tool,args_snapshot,snapshot_hash,object_version,justification,refs_authority,refs_consent,status,resolution,verdict,edited_body,edit_reason,created_at,expires_at,resolved_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
     .bind(seed.approval.id, museumId, seed.approval.objectId, 'HIGH', proposedDraft, 'propose_label_update', argsSnapshot, await sha256(argsSnapshot), 3, 'Seeded label revision for human review', '["verified"]', '["public_attributed"]', 'pending', null, null, null, null, seed.approval.createdAt, seed.approval.createdAt + APPROVAL_TTL_MS, null));
 
