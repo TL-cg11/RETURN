@@ -7,6 +7,12 @@ import { sessionFromCookies } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
+/** Fixed locale and zone so the server and the client render the same string. */
+const reviewDate = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', day: '2-digit', month: 'short', year: 'numeric' });
+function formatReviewDate(publishedAt: number | null) {
+  return publishedAt ? reviewDate.format(new Date(publishedAt)) : null;
+}
+
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const { museumId } = await sessionFromCookies();
@@ -59,7 +65,8 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
         </div>
       </section>
 
-      <LabelFlip label={record.label} questions={record.questions} />
+      <LabelFlip label={record.label} questions={record.questions} revision={record.labelRevision}
+        assertions={record.labelAssertions} lastReviewed={formatReviewDate(record.labelPublishedAt)} />
 
       <section className="timeline-section">
         <div className="section-heading compact">

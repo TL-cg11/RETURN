@@ -130,7 +130,13 @@ export async function seedWorkspace(d1: D1Database, museumId: string) {
     statements.push(d1.prepare('INSERT OR IGNORE INTO activity (id,museum_id,actor,action,detail,created_at,actor_role,actor_type,tool,target,risk,policy_decision,result) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
       .bind(entry.id, museumId, entry.actor, entry.action, entry.detail, entry.createdAt, entry.actorRole, entry.actorType, entry.tool, entry.target, entry.risk, entry.policyDecision, entry.result));
   }
-  const argsSnapshot = JSON.stringify({ draft: proposedDraft, object_id: seed.approval.objectId, object_version: 3, assertions: [], evidence_refs: ['EV-068'] });
+  // Mirrors what `propose_label_update` would snapshot for this proposal, so the
+  // seeded approval publishes a revision with the same assertion structure.
+  const seededAssertions = [
+    { mode: 'verified_fact', text: 'Acquisition is documented in the museum record.', refs: ['EV-068'] },
+    { mode: 'open_question', text: 'Custody between 1959–1968 is unresolved.', refs: ['EV-068'] },
+  ];
+  const argsSnapshot = JSON.stringify({ draft: proposedDraft, object_id: seed.approval.objectId, object_version: 3, assertions: seededAssertions, evidence_refs: ['EV-068'] });
   statements.push(d1.prepare('INSERT OR IGNORE INTO approvals (id,museum_id,object_id,risk,snapshot,tool,args_snapshot,snapshot_hash,object_version,justification,refs_authority,refs_consent,status,resolution,verdict,edited_body,edit_reason,created_at,expires_at,resolved_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
     .bind(seed.approval.id, museumId, seed.approval.objectId, 'HIGH', proposedDraft, 'propose_label_update', argsSnapshot, await sha256(argsSnapshot), 3, 'Seeded label revision for human review', '["verified"]', '["public_attributed"]', 'pending', null, null, null, null, seed.approval.createdAt, seed.approval.createdAt + APPROVAL_TTL_MS, null));
 
