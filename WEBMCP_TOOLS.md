@@ -210,7 +210,8 @@
 { "type":"object","additionalProperties":false,"required":["evidence_id"],
   "properties":{ "evidence_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{3,64}$"} } }
 ```
-- 개별 evidence 원문을 **consent·visibility에 따라 redaction**하여 반환. `research_only`/`private`은 직접 인용 불가 표기, `sealed`는 **`{status:"denied", policy:"sealed_hidden"}` — 존재 자체를 숨김**.
+- 개별 evidence 원문을 **consent·visibility에 따라 redaction**하여 반환. `research_only`/`private`은 직접 인용 불가로 표기하되 메타데이터는 노출.
+- **`sealed`는 존재 자체를 숨긴다:** 존재하지 않는 ID와 **완전히 동일한** 응답을 반환해야 한다 — `{status:"invalid", field:"evidence_id", message:"No evidence with that id.", next, retryable:true}`. `policy:"sealed_hidden"` 같은 구별되는 거부를 반환하면 "그 ID에 sealed 자료가 있다"는 사실이 새어나가므로 금지. (sealed 접근 시도는 서버 audit log에만 별도 기록.)
 - 1.5K 응답 예산에서 case 요약(§3.4)과 원문 조회를 분리하는 목적.
 
 ### 3.8 `save_label_draft` — LOW · **write** (개명: `draft_label`→)
@@ -306,6 +307,43 @@
 - 툴 정의 토큰 예산 충족(정의당 100–500 토큰 수준)
 
 **실패 시**(위 미달): Curator surface를 **단계별 동적 노출 7–9개**로 축소한다 — 예: 기본 노출 = summary/list_objects/list_submissions/get_review_case/get_evidence_detail/compare_evidence/save_label_draft, 승인·검토 개시(propose_label_update/open_return_review/check_approval/list_pending_approvals)는 case 진입 후 lazy 등록. "고정 개수 절벽"이 아니라 중복도·설명 품질·컨텍스트 비용으로 판단한다. (출처: [Anthropic — Advanced tool use](https://www.anthropic.com/engineering/advanced-tool-use))
+
+---
+
+## 6. 구현 타당성 검토 (Implementation feasibility)
+
+실제 `return/` 코드와 대조해 구현 시 걸릴 지점과 처리 방침을 정리한다.
+
+### 6.1 `registerTool` 시그니처 + AbortSignal 위치 — **검증 필요**
+- 현재 `register.ts`는 `registerTool({name,description,inputSchema,annotations,execute})` 단일 객체 형태를 쓴다. 본 문서의 "`registerTool(spec,{signal})`"에서 **signal을 두 번째 인자로 받는지, spec 속성으로 받는지**는 대상 브라우저 빌드에서 실측 확인해야 한다.
+- **폴백 안전망:** 계획서 §18.3이 "역할 전환 시 페이지 전체 refresh 허용"을 이미 명시한다. AbortSignal 해제가 대상 빌드에서 불안정하면, role 전환을 **full refresh**로 처리해 이전 도구를 확실히 제거한다(데모 안정성 우선). 즉 AbortController는 최적 경로, refresh는 보장 경로.
+
+### 6.2 응답 envelope 마이그레이션 — **기존 dispatcher 전면 리팩터**
+- 현재 `/api/tools/[name]/route.ts`는 툴마다 제각각 형태를 반환한다(`{objects}`, `{object:moonbird}`, `evaluatePolicy(...)` 결과 등). §1.4 통일 envelope로 가려면 **공통 래퍼**(`ok(data,{refs,trust})` / `denied(...)` / `invalid(...)` / `pending(...)`)를 만들고 모든 핸들러를 이를 통과시켜야 한다. 값 자체는 문제없으나 전 핸들러 수정 범위임을 인지.
+
+### 6.3 `untrustedContentHint`는 best-effort, `trust` 필드가 진짜 경계
+- 비표준 annotation 키라 브라우저가 무시하거나(현재는 통과) 향후 검증에 걸릴 수 있다. **신뢰 경계는 응답 body의 `trust:"untrusted"` + 서버 정책 + UI badge에 둔다.** annotation은 힌트일 뿐 강제가 아니다.
+
+### 6.4 `submit_evidence` 스키마 — flat 10필드 vs nested 8필드 **트레이드오프**
+- 모범사례는 "as flat as possible"과 "파라미터 ≤8"을 **동시에** 권한다. submit_evidence는 자연스럽게 10필드라 둘이 충돌한다. 현재 문서는 `source`/`provenance`를 1단계 객체로 묶어 상위 8필드로 맞췄다(중첩 ≤2 준수).
+- **대안:** eval에서 에이전트가 nested 형태를 자주 틀리면 flat 10필드로 되돌린다(≤8은 자체 예산이지 스펙 한계가 아님). 이 한 툴은 예산 경계 케이스로 표시하고 eval로 결정.
+
+### 6.5 `propose_label_update` 정책은 draft를 **서버에서 해석**해야 함
+- 인자는 `draft_id` + `justification.refs`만 받지만, "`verified_fact`가 submitted-only에 의존하면 거부" 규칙은 **draft의 assertion들과 그 refs authority**를 봐야 판정된다. 따라서 서버가 `draft_id`로 LabelDraft를 로드→assertions→ref authority를 resolve한 뒤 gateway에 `ctx`로 넘겨야 한다(클라이언트 인자만으로 판정 불가).
+
+### 6.6 인자 없는 툴도 **빈 스키마 명시**
+- `get_collection_summary`, `list_pending_approvals`는 `inputSchema:{type:"object",properties:{},required:[],additionalProperties:false}`를 반드시 넣는다. 스키마 생략 시 일부 에이전트가 임의 인자를 지어낼 수 있다.
+
+### 6.7 `additionalProperties:false`의 양면
+- 잘못된 인자를 거르는 데 유리하나, 에이전트가 여분 필드를 붙이면 즉시 `invalid`가 된다. 이는 의도된 동작이며, `invalid` 응답의 `next.args_patch`로 올바른 형태를 되돌려주어 self-correction을 유도한다.
+
+### 6.8 ID 패턴 실측 정합성 — **통과**
+- 시드 object_id(`moonbird-mask`, `riverstone-vessel`, `woven-signal-cloth` …)는 `^[a-z0-9-]{3,64}$`에, evidence/submission/case/approval ID(`EV-068`, `SUB-1042`, `RC-014`, `APR-004`)는 대문자 허용 패턴 `^[A-Za-z0-9_-]{3,64}$`에 모두 부합. object_id만 소문자 전용으로 좁게 유지.
+
+### 6.9 위험 등급 ≠ readOnly (재확인)
+- `save_label_draft`는 risk=LOW이면서 `readOnlyHint:false`(write)다. 모순 아님 — risk는 결과 도달 범위, readOnly는 상태 변경 여부로 **독립 축**이다.
+
+**구현 순서 권고:** (1) 공통 응답 래퍼 + inputSchema 상수화 → (2) register.ts를 AbortController(+refresh 폴백)로 교체 → (3) 각 핸들러를 DB·gateway 경유로 전환 → (4) `get_evidence_detail`·`save_label_draft` 추가/개명 → (5) eval로 §5 게이트 측정.
 
 ---
 
