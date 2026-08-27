@@ -83,6 +83,15 @@ async function main() {
   /* ---------- 2. role boundary ---------- */
   section('role boundary');
   check('session switches to community', await setRole('community'));
+  check('role and museum cookies are signed, not plaintext',
+    jar.get('role')?.includes('.') && jar.get('museum_id')?.includes('.')
+      && jar.get('role') !== 'community' && !jar.get('museum_id')?.startsWith('museum_'));
+  const signedSession = new Map(jar);
+  jar.set('role', 'curator');
+  const forgedRole = await tool('list_objects', {});
+  check('editing role=curator cannot forge a curator session', forgedRole.status === 403, `status ${forgedRole.status}`);
+  jar.clear();
+  for (const [key, value] of signedSession) jar.set(key, value);
   let denied = 0;
   for (const name of CURATOR_TOOLS) {
     const response = await tool(name, {});
@@ -131,6 +140,8 @@ async function main() {
   /* ---------- 4. the record loop ---------- */
   section('community to curator loop');
   check('session switches to curator', await setRole('curator'));
+  const wrongSurface = await tool('submit_context_claim', { object_id: 'dawn-marker', claim: 'Wrong role', source: 'Smoke test', consent: 'public_anonymous' });
+  check('curator session cannot call a community-only tool', wrongSurface.status === 403, `status ${wrongSurface.status}`);
   const inbox = await tool('list_submissions', {});
   check('curator inbox contains the new contribution', inbox.status === 200 && inbox.json.submissions.some((s) => s.id === submissionId));
   check('list_submissions is flagged as external content', inbox.json?.untrusted_content === true);
@@ -250,6 +261,7 @@ async function main() {
   const pollOne = await get('/api/events/poll');
   check('the poll endpoint returns a revision token', pollOne.status === 200 && typeof pollOne.json?.revision === 'string', JSON.stringify(pollOne.json));
   const revisionBefore = pollOne.json?.revision;
+  await setRole('community');
   await tool('submit_context_claim', { object_id: 'dawn-marker', claim: 'Live-record smoke claim', source: 'Verification run', consent: 'public_anonymous' });
   const pollTwo = await get('/api/events/poll');
   check('a contribution moves the revision token', pollTwo.json?.revision !== revisionBefore, `${revisionBefore} -> ${pollTwo.json?.revision}`);
@@ -269,6 +281,7 @@ async function main() {
 
   const communityStream = await fetch(`${base}/api/events/poll`, { headers: { cookie: cookieHeader() } });
   check('both surfaces read one workspace token', (await communityStream.json()).revision === pollTwo.json?.revision);
+  await setRole('curator');
 
   /* ---------- 8. approvals ---------- */
   section('approvals');
@@ -279,16 +292,20 @@ async function main() {
   check('check_approval reports pending', beforeResolve.json?.status === 'pending');
   // Relative to the version this run started from: the suite may run twice
   // against the same workspace, and each approval advances the record.
+  await setRole('community');
   const baseVersion = (await tool('get_object_detail', { object_id: 'moonbird-mask' })).json?.object?.version;
+  await setRole('curator');
 
   const edited = 'The museum acquired this mask through Lorne Gallery in 1968. Community material places it in Aru village in 1959. The intervening custody is under joint research.';
   const resolveResponse = await post(`/api/curator/approvals/${approvalId}/resolve`, { action: 'approve_with_edit', draft: edited, editReason: 'Preserve the verified acquisition while attributing the community material.' });
   check('approve-with-edit is recorded as such', resolveResponse.status === 200 && resolveResponse.json.resolution === 'approved_with_edit', JSON.stringify(resolveResponse.json));
   check('approval publishes a new label revision', resolveResponse.json?.published === true && resolveResponse.json?.revision === baseVersion + 1, JSON.stringify(resolveResponse.json));
+  await setRole('community');
   const publishedDetail = await tool('get_object_detail', { object_id: 'moonbird-mask' });
   check('approved text becomes the public label', publishedDetail.json?.object?.label === edited, JSON.stringify(publishedDetail.json?.object?.label));
   check('publication advances the object version', publishedDetail.json?.object?.version === baseVersion + 1, `version ${publishedDetail.json?.object?.version} from ${baseVersion}`);
   check('the public revision number tracks the publication', publishedDetail.json?.object?.label_revision === publishedDetail.json?.object?.version, `revision ${publishedDetail.json?.object?.label_revision}`);
+  await setRole('curator');
   const afterResolve = await tool('check_approval', { approval_id: approvalId });
   check('check_approval reflects the decision', afterResolve.json?.status === 'approved_with_edit');
   const replay = await post(`/api/curator/approvals/${approvalId}/resolve`, { action: 'approve_with_edit', draft: edited });
