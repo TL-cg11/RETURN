@@ -1,2 +1,13 @@
-import { ensureDatabase } from '@/db/setup';
-export async function POST(){const museumId=`museum_${crypto.randomUUID()}`;try{const db=await ensureDatabase();await db.batch([db.prepare('DELETE FROM submissions'),db.prepare('DELETE FROM approvals'),db.prepare('DELETE FROM activity'),db.prepare('DELETE FROM museums'),db.prepare('INSERT INTO museums (id,name,created_at) VALUES (?,?,?)').bind(museumId,'Halcyon Museum — fresh workspace',Date.now())]);}catch{return Response.json({museumId,reset:true,persisted:false},{headers:{'set-cookie':`museum_id=${museumId}; Path=/; SameSite=Lax; Max-Age=86400`}});}return Response.json({museumId,reset:true,persisted:true},{headers:{'set-cookie':`museum_id=${museumId}; Path=/; SameSite=Lax; Max-Age=86400`}});}
+import { ensureDatabase, seedWorkspace } from '@/db/setup';
+
+export async function POST() {
+  const museumId = `museum_${crypto.randomUUID()}`;
+  const cookie = `museum_id=${museumId}; Path=/; SameSite=Lax; Max-Age=86400`;
+  try {
+    const db = await ensureDatabase(museumId);
+    await seedWorkspace(db, museumId);
+  } catch {
+    return Response.json({ museumId, reset: true, persisted: false }, { headers: { 'set-cookie': cookie } });
+  }
+  return Response.json({ museumId, reset: true, persisted: true }, { headers: { 'set-cookie': cookie } });
+}

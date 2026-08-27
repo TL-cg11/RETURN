@@ -38,20 +38,26 @@ npm install
 npm run dev
 ```
 
-The generated Sites project uses a local D1 database binding. Useful checks:
+The project runs against a local D1 binding in development. Useful checks:
 
 ```bash
-npm test
-npm run lint
-npm run build
+npm run verify      # lint, typecheck, 46 unit tests, production build
+npm run test:smoke  # 71 end-to-end checks against a running server
 ```
+
+`test:smoke` exercises every page route, all 18 WebMCP tools, the role
+boundary, the four policy outcomes, approve-with-edit, and the fresh-workspace
+reset. Start `npm run dev` first, then point it at that server:
+`npm run test:smoke -- http://localhost:3000`.
 
 ## Repository map
 
 - `RETURN_PLAN.md` — full product and technical specification
 - `return/` — deployable application
 - `return/lib/policy/` — pure policy gateway and 35 unit tests
-- `return/lib/webmcp/` — 18 role-scoped WebMCP registrations
+- `return/lib/webmcp/` — 18 role-scoped WebMCP tool definitions and 11 registration tests
+- `return/db/` — D1 schema, per-workspace seeding, and the query layer
+- `return/scripts/smoke.mjs` — end-to-end verification run
 - `return/drizzle/` — inspected D1 schema migration
 
 ## Known limitations
@@ -59,6 +65,7 @@ npm run build
 - Role switching is a deliberate demo affordance, not production authentication.
 - RE:TURN does not determine illicit removal, transfer ownership, or execute physical return.
 - The demo uses lightweight refresh behavior rather than a production event bus.
+- WebMCP tools register only where the browser exposes `document.modelContext`. Where it is absent the console says so, and the same tools stay reachable over `/api/tools/`.
 - File contribution is represented with a prepared fictional asset and metadata; arbitrary binary upload is outside this MVP.
 
 ## License
