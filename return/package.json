@@ -12,7 +12,7 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
     "deploy": "wrangler deploy -c dist/server/wrangler.json",
-    "test": "node --experimental-strip-types --test lib/policy/rules.test.ts lib/webmcp/register.test.ts",
+    "test": "node --experimental-strip-types --test lib/policy/rules.test.ts lib/webmcp/register.test.ts lib/label-diff.test.ts lib/approval-snapshot.test.ts",
     "test:smoke": "node scripts/smoke.mjs",
     "typecheck": "tsc --noEmit",
     "verify": "npm run lint && npm run typecheck && npm test && npm run build"

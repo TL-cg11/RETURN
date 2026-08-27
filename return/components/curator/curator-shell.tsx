@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { ReactNode, useEffect, useRef, useState } from 'react';
 import { registerWebMcpTools } from '@/lib/webmcp/register';
 import { curatorTools } from '@/lib/webmcp/tools';
+import { diffLabelText } from '@/lib/label-diff';
 
 export type PendingApproval = {
   id: string; objectId: string; objectTitle: string; currentLabel: string;
@@ -39,6 +40,7 @@ export function CuratorShell({
   const [resolved, setResolved] = useState('');
   const [error, setError] = useState('');
   const drawerRef = useRef<HTMLElement>(null);
+  const labelDiff = approval ? diffLabelText(approval.currentLabel, draft) : [];
 
   useEffect(() => registerWebMcpTools('curator'), []);
 
@@ -238,10 +240,26 @@ export function CuratorShell({
                   <p>Official publication changes what the public sees. Evidence authority and consent checks passed.</p>
                 </section>
                 <section>
-                  <h3>Current label</h3>
-                  <p className="before-copy">{approval.currentLabel}</p>
-                  <h3>Curator-edited version</h3>
-                  <textarea aria-label="Curator-edited label" rows={6} value={draft} onChange={(event) => setDraft(event.target.value)} />
+                  <div className="diff-heading">
+                    <h3>Before / after</h3>
+                    <p><span className="diff-removed-key">Removed</span><span className="diff-added-key">Added</span></p>
+                  </div>
+                  <div className="label-diff" aria-label="Current and proposed label comparison">
+                    <article>
+                      <h4>Before <span>Current public label</span></h4>
+                      <p>{labelDiff.map((part, index) => part.type === 'added' ? null : part.type === 'removed'
+                        ? <del key={index}>{part.text}</del>
+                        : <span key={index}>{part.text}</span>)}</p>
+                    </article>
+                    <article>
+                      <h4>After <span>Proposed revision</span></h4>
+                      <p aria-live="polite">{labelDiff.map((part, index) => part.type === 'removed' ? null : part.type === 'added'
+                        ? <ins key={index}>{part.text}</ins>
+                        : <span key={index}>{part.text}</span>)}</p>
+                    </article>
+                  </div>
+                  <label className="approval-editor-label" htmlFor="approval-draft">Curator edit</label>
+                  <textarea id="approval-draft" rows={6} value={draft} onChange={(event) => setDraft(event.target.value)} />
                   {draft !== approval.snapshot && <p className="restriction-note">Edited. This will be recorded as approve-with-edit.</p>}
                 </section>
                 {error && <p className="clarify-result" role="alert">{error}</p>}
