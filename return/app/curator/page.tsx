@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import { NavLink as Link } from '@/components/shared/nav-link';
 import { listActivity, listSubmissions, workspaceSummary } from '@/db/queries';
 import { ApprovalTrigger } from '@/components/curator/approval-trigger';
 import { collection } from '@/lib/demo-data';

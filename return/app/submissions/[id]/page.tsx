@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import { NavLink as Link } from '@/components/shared/nav-link';
 import { notFound } from 'next/navigation';
 import { getSubmission } from '@/db/queries';
 import { CommunityHeader } from '@/components/shared/community-header';
