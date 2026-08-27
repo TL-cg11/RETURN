@@ -1,6 +1,5 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
 import { FormEvent, useState } from 'react';
 import type { CollectionObject } from '@/lib/domain/types';
 
@@ -16,7 +15,6 @@ const CONSENT_OPTIONS = [
 type PickerObject = Pick<CollectionObject, 'id' | 'title' | 'accession' | 'date' | 'status' | 'tone'>;
 
 export function ContributionForm({ objectId, objects }: { objectId: string; objects: PickerObject[] }) {
-  const router = useRouter();
   const [step, setStep] = useState(0);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
@@ -50,9 +48,19 @@ export function ContributionForm({ objectId, objects }: { objectId: string; obje
       body: JSON.stringify(form),
     });
     const data = await response.json() as { id?: string; reason?: string };
-    setPending(false);
-    if (!response.ok || !data.id) { setError(data.reason ?? 'Could not submit this contribution.'); return; }
-    router.push(`/submissions/${data.id}`);
+    if (!response.ok || !data.id) {
+      setPending(false);
+      setError(data.reason ?? 'Could not submit this contribution.');
+      return;
+    }
+    // Stay disabled through the navigation. Re-enabling here let a second click
+    // file the same contribution twice while the browser was still moving.
+    //
+    // A full page load rather than router.push, for the reason recorded in
+    // components/shared/nav-link.tsx: vinext's client navigation does not run in
+    // the production build, so router.push left the contributor on the form with
+    // no sign anything had happened.
+    location.href = `/submissions/${data.id}`;
   }
 
   return (
