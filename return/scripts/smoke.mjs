@@ -213,7 +213,7 @@ async function main() {
   const resolveResponse = await post(`/api/curator/approvals/${approvalId}/resolve`, { action: 'approved', draft: edited });
   check('approve-with-edit is recorded as such', resolveResponse.status === 200 && resolveResponse.json.resolution === 'approved_with_edit', JSON.stringify(resolveResponse.json));
   const afterResolve = await tool('check_approval', { approval_id: approvalId });
-  check('check_approval reflects the decision', afterResolve.json?.status === 'approved');
+  check('check_approval reflects the decision', afterResolve.json?.status === 'approved_with_edit');
   const replay = await post(`/api/curator/approvals/${approvalId}/resolve`, { action: 'approved', draft: edited });
   check('a resolved approval cannot be replayed', replay.status === 409, `status ${replay.status}`);
   const ghost = await post('/api/curator/approvals/APR-999/resolve', { action: 'approved' });
