@@ -13,8 +13,11 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
   const submission = await getSubmission(museumId, id);
   if (!submission) notFound();
 
-  const record = objectRecord(submission.object_id);
-  const verified = evidenceFor(submission.object_id).filter((item) => item.authority === 'verified');
+  const [record, evidence] = await Promise.all([
+    objectRecord(museumId, submission.object_id, 'curator'),
+    evidenceFor(museumId, submission.object_id, 'curator'),
+  ]);
+  const verified = evidence.filter((item) => item.authority === 'verified');
   const counterpart = verified[0];
   const restricted = submission.consent === 'research_only' || submission.consent === 'private';
 

@@ -111,6 +111,7 @@ async function main() {
 
   const timeline = await tool('get_provenance_timeline', { object_id: 'moonbird-mask' });
   check('get_provenance_timeline marks the gap', timeline.json?.gaps?.length > 0);
+  check('Moonbird gap is consistently 1959–1968', timeline.json?.gaps?.some((gap) => gap.period === '1959–1968'));
 
   const submitted = await tool('submit_evidence', {
     object_id: 'moonbird-mask', title: 'Smoke test photograph',
@@ -166,6 +167,9 @@ async function main() {
   check('get_review_case resolves the case', reviewCase.status === 200 && reviewCase.json.case_id === submissionId);
   const compare = await tool('compare_evidence', { evidence_ids: [submissionId] });
   check('compare_evidence separates conflicts and questions', compare.status === 200 && Array.isArray(compare.json.conflicts) && Array.isArray(compare.json.open_questions));
+  const visibility = await tool('compare_evidence', { evidence_ids: ['EV-INJ-DEALER', 'EV-INJ-SEALED'] });
+  check('restricted evidence body is withheld from agent output', visibility.status === 200 && visibility.json.evidence?.[0]?.body === null);
+  check('sealed evidence is omitted from agent output', visibility.json?.omitted_evidence_ids?.includes('EV-INJ-SEALED') && !visibility.text.includes('SYSTEM_OVERRIDE'));
   const working = await tool('build_provenance_timeline', { object_id: 'moonbird-mask' });
   check('build_provenance_timeline does not publish', working.status === 200 && working.json.note.includes('unchanged'));
   const draft = await tool('draft_label', { object_id: 'moonbird-mask' });

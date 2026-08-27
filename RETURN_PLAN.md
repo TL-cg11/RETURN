@@ -1136,34 +1136,34 @@ Activity
 
 ### 13.1 박물관
 
-**The Meridian Museum of Shared Histories**
+**The Halcyon Museum of Material Memory**
 
 브랜드 표기:
 
-> Meridian / RE:TURN Collection
+> Halcyon / RE:TURN Collection
 
 ### 13.2 유물 8개
 
 | ID | 이름 | 핵심 상태 |
 |---|---|---|
-| `obj_moonbird` | Moonbird Mask | 메인 데모, 1959–1968 gap, 공개 제한 요청 |
-| `obj_rain_drum` | Rain Drum | 제작자 명칭과 현재 라벨 충돌 |
-| `obj_salt_map` | Salt Map Textile | 지역 명칭이 기관 기록과 다름 |
-| `obj_glass_seed` | Glass Seed Specimen | provenance가 거의 완전한 대조군 |
-| `obj_river_bell` | River Bell | 이미지 공개 동의가 research_only |
-| `obj_amber_transit` | Amber Transit Ledger | 두 catalog의 날짜 충돌 |
-| `obj_twin_canoe` | Twin Canoe Panel | 둘 이상의 competing claim |
-| `obj_star_loom` | Star Loom Fragment | 완전한 기록, agent read demo용 |
+| `moonbird-mask` | Moonbird Mask | 메인 데모, 1959–1968 gap, 공개 제한 요청 |
+| `riverstone-vessel` | Riverstone Vessel | provenance가 완전한 대조군 |
+| `woven-signal-cloth` | Woven Signal Cloth | 1946–1952 gap, 새 문서 검토 중 |
+| `tide-listening-stone` | Tide Listening Stone | 안정된 공식 기록 |
+| `reed-memory-box` | Reed Memory Box | 1921–1934 gap, 공동 조사 중 |
+| `four-winds-bowl` | Four Winds Bowl | 공동체 맥락이 추가된 기록 |
+| `dawn-marker` | Dawn Marker | 완전한 기록, agent read demo용 |
+| `harbor-thread-map` | Harbor Thread Map | 1939–1951 gap, 날짜 검토 중 |
 
 ### 13.3 Moonbird Mask 공식 기록
 
-- 제작: 1940년대 추정
-- 지역: Aru region
-- 재료: 목재, 조개, 천연 안료
+- 제작: c. 1930
+- 지역: Aru coast (place attribution under review)
+- 재료: carved nightwood, shell pigment
 - 박물관 취득: 1968년
 - 판매자: Lorne Gallery
-- 기존 라벨: “Ceremonial mask, acquired legally from Lorne Gallery in 1968.”
-- provenance gap: 제작 시기부터 1968년 이전
+- 기존 라벨: “Carved ceremonial mask, made around 1930. The museum acquired the mask from Lorne Gallery in 1968. Its movement and use before acquisition are not yet fully documented.”
+- provenance gap: 1959–1968
 
 ### 13.4 제출 자료 5개
 

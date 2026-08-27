@@ -1,4 +1,5 @@
-import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
+import { check, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const museums = sqliteTable('museums', { id:text('id').primaryKey(), name:text('name').notNull(), createdAt:integer('created_at').notNull() });
 export const submissions = sqliteTable('submissions', {
@@ -38,6 +39,7 @@ export const objects = sqliteTable('objects', {
   primaryKey({ columns: [table.museumId, table.id] }),
   uniqueIndex('uq_objects_museum_accession').on(table.museumId, table.accessionNumber),
   index('idx_objects_museum_visibility').on(table.museumId, table.visibility),
+  check('objects_visibility_check', sql`${table.visibility} IN ('public','restricted','sealed')`),
 ]);
 
 export const evidence = sqliteTable('evidence', {
@@ -45,14 +47,25 @@ export const evidence = sqliteTable('evidence', {
   body: text('body').notNull(), sourceName: text('source_name').notNull(), sourceRelationship: text('source_relationship').notNull(), dateOrPeriod: text('date_or_period').notNull(),
   place: text('place').notNull(), authority: text('authority').notNull(), consent: text('consent').notNull(), visibility: text('visibility').notNull().default('public'),
   submittedBy: text('submitted_by').notNull(), verifiedBy: text('verified_by'), verifiedAt: integer('verified_at'), createdAt: integer('created_at').notNull(), updatedAt: integer('updated_at').notNull(),
-}, (table) => [primaryKey({ columns: [table.museumId, table.id] }), index('idx_evidence_museum_object').on(table.museumId, table.objectId, table.visibility)]);
+}, (table) => [
+  primaryKey({ columns: [table.museumId, table.id] }),
+  index('idx_evidence_museum_object').on(table.museumId, table.objectId, table.visibility),
+  check('evidence_authority_check', sql`${table.authority} IN ('submitted','verified')`),
+  check('evidence_consent_check', sql`${table.consent} IN ('private','research_only','public_anonymous','public_attributed')`),
+  check('evidence_visibility_check', sql`${table.visibility} IN ('public','restricted','sealed')`),
+]);
 
 export const provenanceEvents = sqliteTable('provenance_events', {
   id: text('id').notNull(), museumId: text('museum_id').notNull(), objectId: text('object_id').notNull(), startDate: text('start_date').notNull(), endDate: text('end_date'),
   title: text('title').notNull(), detail: text('detail').notNull(), custodian: text('custodian'), location: text('location'), status: text('status').notNull(),
   authority: text('authority').notNull(), evidenceRefs: text('evidence_refs').notNull().default('[]'), isGap: integer('is_gap', { mode: 'boolean' }).notNull().default(false),
   sortOrder: integer('sort_order').notNull(), createdAt: integer('created_at').notNull(), updatedAt: integer('updated_at').notNull(),
-}, (table) => [primaryKey({ columns: [table.museumId, table.id] }), index('idx_provenance_museum_object').on(table.museumId, table.objectId, table.sortOrder)]);
+}, (table) => [
+  primaryKey({ columns: [table.museumId, table.id] }),
+  index('idx_provenance_museum_object').on(table.museumId, table.objectId, table.sortOrder),
+  check('provenance_status_check', sql`${table.status} IN ('claimed','verified','disputed','gap')`),
+  check('provenance_authority_check', sql`${table.authority} IN ('submitted','verified')`),
+]);
 
 export const labelPublications = sqliteTable('label_publications', {
   id: text('id').notNull(), museumId: text('museum_id').notNull(), objectId: text('object_id').notNull(), title: text('title').notNull(), body: text('body').notNull(),

@@ -1,9 +1,9 @@
 import {
-  countByStatus, getApproval, getSubmission, listActivity, listApprovals, listSubmissions,
+  countByStatus, getApproval, getEvidenceByIds, getSubmission, listActivity, listApprovals, listObjects, listSubmissions,
   recordActivity, setSubmissionStatus, workspaceSummary, type SubmissionRow,
 } from '@/db/queries';
-import { ensureDatabase, sha256 } from '@/db/setup';
-import { collection, type Authority, type Consent, type Visibility } from '@/lib/demo-data';
+import { APPROVAL_TTL_MS, ensureDatabase, sha256 } from '@/db/setup';
+import type { Authority, Consent, Visibility } from '@/lib/domain/types';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
 import { evidenceFor, objectRecord, searchCollection } from '@/lib/records';
 import { sessionFromRequest } from '@/lib/session';
@@ -40,15 +40,17 @@ function publicSubmission(row: SubmissionRow) {
   };
 }
 
-function refsFrom(args: Record<string, unknown>, objectId: string) {
+async function refsFrom(museumId: string, args: Record<string, unknown>, objectId: string) {
   const ids = Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [];
-  const known = evidenceFor(objectId);
+  // Policy enforcement may inspect sealed metadata, but sealed records are never
+  // returned to the agent. Unknown/cross-object ids fail closed as sealed/private.
+  const known = await getEvidenceByIds(museumId, ids, 'curator');
   return ids.map((id) => {
-    const found = known.find((item) => item.id === id);
+    const found = known.find((item) => item.id === id && item.objectId === objectId);
     return {
       authority: (found?.authority ?? 'submitted') as Authority,
-      consent: (found?.consent ?? 'public_attributed') as Consent,
-      visibility: 'public' as Visibility,
+      consent: (found?.consent ?? 'private') as Consent,
+      visibility: (found?.visibility ?? 'sealed') as Visibility,
     };
   });
 }
@@ -68,7 +70,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
   switch (name) {
     /* ------------- Community: discovery ------------- */
     case 'search_collection': {
-      const matches = searchCollection(typeof args.query === 'string' ? args.query : '');
+      const matches = await searchCollection(museumId, typeof args.query === 'string' ? args.query : '', 'public');
       return Response.json({
         query: args.query ?? null,
         count: matches.length,
@@ -77,7 +79,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
     }
 
     case 'get_object_detail': {
-      const record = objectRecord(objectId);
+      const record = await objectRecord(museumId, objectId, 'public');
       if (!record) return invalid(...NO_OBJECT);
       const submissions = await listSubmissions(museumId, { objectId });
       return Response.json({
@@ -92,7 +94,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
 
     case 'get_provenance_timeline':
     case 'build_provenance_timeline': {
-      const record = objectRecord(objectId);
+      const access = name === 'get_provenance_timeline' ? 'public' : 'agent';
+      const record = await objectRecord(museumId, objectId, access);
       if (!record) return invalid(...NO_OBJECT);
       const body = {
         object_id: record.id,
@@ -111,7 +114,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
     /* ------------- Community: contribution ------------- */
     case 'submit_evidence':
     case 'submit_context_claim': {
-      const record = objectRecord(objectId);
+      const record = await objectRecord(museumId, objectId, 'public');
       if (!record) return invalid(...NO_OBJECT);
       const claim = typeof args.claim === 'string' ? args.claim.trim() : '';
       const title = typeof args.title === 'string' && args.title.trim() ? args.title.trim() : claim.slice(0, 80);
@@ -120,12 +123,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       const policy = evaluatePolicy({ actor: 'community', action: 'submit_evidence', museumMatch: true });
       const id = `SUB-${Math.floor(1100 + Math.random() * 8000)}`;
       const db = await ensureDatabase(museumId);
-      await db.prepare('INSERT INTO submissions (id,museum_id,object_id,kind,title,description,source,consent,requested_outcome,status,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      const createdAt = Date.now();
+      await db.prepare('INSERT INTO submissions (id,museum_id,object_id,kind,title,description,source,consent,requested_outcome,contributor_name,contributor_role,evidence_refs,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
         .bind(id, museumId, record.id, name === 'submit_evidence' ? 'Evidence' : 'Context claim', title,
           String(args.description ?? args.claim ?? ''), String(args.source ?? 'Community agent'),
           typeof args.consent === 'string' ? args.consent : 'research_only',
-          String(args.requested_outcome ?? 'Add context'), 'received', Date.now()).run();
-      await recordActivity(museumId, 'Community Agent', 'submitted new evidence', title);
+          String(args.requested_outcome ?? 'Add context'), String(args.source ?? 'Community agent'), 'community',
+          JSON.stringify(Array.isArray(args.evidence_refs) ? args.evidence_refs.map(String) : []), 'received', createdAt, createdAt).run();
+      await recordActivity(museumId, 'Community Agent', 'submitted new evidence', title, {
+        tool: name, target: id, risk: 'MEDIUM', policyDecision: 'applied', result: id,
+      });
       return Response.json({ ...policy, submission_id: id, object_id: record.id, authority: 'submitted', status: 'received' });
     }
 
@@ -150,6 +157,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
 
     case 'list_objects': {
       const status = typeof args.status === 'string' ? args.status.toLowerCase() : '';
+      const collection = await listObjects(museumId, 'agent');
       const objects = collection.filter((item) => !status || item.status.toLowerCase().includes(status));
       const perObject = await Promise.all(objects.map((item) => listSubmissions(museumId, { objectId: item.id })));
       return Response.json({
@@ -171,12 +179,32 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
 
     case 'get_review_case':
     case 'compare_evidence': {
+      const requestedEvidenceIds = Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [];
+      const selectedEvidence = name === 'compare_evidence'
+        ? await getEvidenceByIds(museumId, requestedEvidenceIds, 'agent')
+        : [];
+      if (name === 'compare_evidence' && selectedEvidence.length) {
+        const objectIds = [...new Set(selectedEvidence.map((item) => item.objectId))];
+        const records = await Promise.all(objectIds.map((id) => objectRecord(museumId, id, 'agent')));
+        return Response.json({
+          evidence: selectedEvidence,
+          objects: records.filter(Boolean).map((record) => ({ id: record!.id, title: record!.title, gap: record!.gap })),
+          conflicts: selectedEvidence.some((item) => item.authority === 'submitted')
+            ? ['Submitted material requires source and consent review before it can change the official record.'] : [],
+          open_questions: records.flatMap((record) => record?.questions ?? []),
+          omitted_evidence_ids: requestedEvidenceIds.filter((id) => !selectedEvidence.some((item) => item.id === id)),
+          untrusted_content: true,
+        });
+      }
       const caseId = typeof args.case_id === 'string' ? args.case_id
-        : Array.isArray(args.evidence_ids) && args.evidence_ids.length ? String(args.evidence_ids[0]) : '';
+        : requestedEvidenceIds.length ? requestedEvidenceIds[0] : '';
       const row = caseId ? await getSubmission(museumId, caseId) : null;
       if (!row) return invalid(name === 'get_review_case' ? 'case_id' : 'evidence_ids', 'No review case with that id exists in this workspace.', 'Call list_submissions to list open cases.');
-      const record = objectRecord(row.object_id);
-      const verified = evidenceFor(row.object_id).filter((item) => item.authority === 'verified');
+      const [record, evidence] = await Promise.all([
+        objectRecord(museumId, row.object_id, 'agent'),
+        evidenceFor(museumId, row.object_id, 'agent'),
+      ]);
+      const verified = evidence.filter((item) => item.authority === 'verified');
       return Response.json({
         case_id: row.id,
         object: record && { id: record.id, title: record.title, label: record.label, gap: record.gap },
@@ -193,9 +221,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
     }
 
     case 'draft_label': {
-      const record = objectRecord(objectId);
+      const record = await objectRecord(museumId, objectId, 'agent');
       if (!record) return invalid(...NO_OBJECT);
-      const evidence = evidenceFor(record.id);
+      const evidence = await evidenceFor(museumId, record.id, 'agent');
       const verified = evidence.filter((item) => item.authority === 'verified');
       const submitted = evidence.filter((item) => item.authority === 'submitted');
       return Response.json({
@@ -229,12 +257,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
     }
 
     case 'propose_label_update': {
-      const record = objectRecord(objectId);
+      const record = await objectRecord(museumId, objectId, 'agent');
       if (!record) return invalid(...NO_OBJECT);
       const draft = typeof args.draft === 'string' ? args.draft.trim() : '';
       if (!draft) return invalid('draft', 'A proposal needs the label text it would publish.', 'Call draft_label first, then propose the text it returns.');
 
-      const policy = evaluatePolicy({ actor: 'curator', action: 'publish_label', museumMatch: true, refs: refsFrom(args, record.id), publicOutput: true });
+      const refs = await refsFrom(museumId, args, record.id);
+      const policy = evaluatePolicy({ actor: 'curator', action: 'publish_label', museumMatch: true, refs, publicOutput: true });
       if (policy.outcome !== 'pending_approval') {
         await recordActivity(museumId, 'Policy Gateway', 'denied unsupported official change', policy.reason);
         return Response.json({ ...policy, escalated_to_curator: true, object_id: record.id, published: false });
@@ -242,16 +271,23 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
 
       const approvalId = `APR-${Math.floor(100 + Math.random() * 900)}`;
       const db = await ensureDatabase(museumId);
-      await db.prepare('INSERT INTO approvals (id,museum_id,object_id,risk,snapshot,snapshot_hash,object_version,status,resolution,created_at,resolved_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-        .bind(approvalId, museumId, record.id, 'HIGH', draft, await sha256(draft), record.version, 'pending', null, Date.now(), null).run();
-      await recordActivity(museumId, 'Curator Agent', 'proposed a label revision', `${record.title} · awaiting human approval`);
+      const createdAt = Date.now();
+      const evidenceIds = Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [];
+      const argsSnapshot = JSON.stringify({ tool: 'propose_label_update', object_id: record.id, object_version: record.version, draft, evidence_refs: evidenceIds });
+      await db.prepare('INSERT INTO approvals (id,museum_id,object_id,risk,snapshot,tool,args_snapshot,snapshot_hash,object_version,justification,refs_authority,refs_consent,status,resolution,verdict,edited_body,edit_reason,created_at,expires_at,resolved_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .bind(approvalId, museumId, record.id, 'HIGH', draft, 'propose_label_update', argsSnapshot, await sha256(argsSnapshot), record.version,
+          String(args.justification ?? ''), JSON.stringify(refs.map((ref) => ref.authority)), JSON.stringify(refs.map((ref) => ref.consent)),
+          'pending', null, null, null, null, createdAt, createdAt + APPROVAL_TTL_MS, null).run();
+      await recordActivity(museumId, 'Curator Agent', 'proposed a label revision', `${record.title} · awaiting human approval`, {
+        tool: 'propose_label_update', target: record.id, risk: 'HIGH', policyDecision: 'pending_approval', result: approvalId,
+      });
       return Response.json({ ...policy, approval_id: approvalId, object_id: record.id, published: false, next: 'Continue other research; poll check_approval.' });
     }
 
     case 'open_return_review': {
-      const record = objectRecord(objectId);
+      const record = await objectRecord(museumId, objectId, 'agent');
       if (!record) return invalid(...NO_OBJECT);
-      const policy = evaluatePolicy({ actor: 'curator', action: 'open_return_review', museumMatch: true, refs: refsFrom(args, record.id) });
+      const policy = evaluatePolicy({ actor: 'curator', action: 'open_return_review', museumMatch: true, refs: await refsFrom(museumId, args, record.id) });
       await recordActivity(museumId, 'Curator Agent',
         policy.outcome === 'pending_approval' ? 'requested a stewardship review' : 'was denied a stewardship review',
         `${record.title} · ${String(args.basis ?? 'no basis given')}`);

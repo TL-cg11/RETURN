@@ -14,7 +14,7 @@ export default async function CuratorLayout({ children }: { children: ReactNode 
   ]);
 
   const first = pending[0];
-  const record = first ? objectRecord(first.object_id) : null;
+  const record = first ? await objectRecord(museumId, first.object_id, 'curator') : null;
   const approval: PendingApproval | null = first ? {
     id: first.id,
     objectId: first.object_id,

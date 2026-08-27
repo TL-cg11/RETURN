@@ -2,7 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { FormEvent, useState } from 'react';
-import { collection } from '@/lib/demo-data';
+import type { CollectionObject } from '@/lib/domain/types';
 
 const steps = ['Object', 'Evidence', 'Context', 'Consent', 'Review'];
 
@@ -13,7 +13,9 @@ const CONSENT_OPTIONS = [
   ['private', 'Private', 'Only authorised curators may view it.'],
 ] as const;
 
-export function ContributionForm({ objectId }: { objectId: string }) {
+type PickerObject = Pick<CollectionObject, 'id' | 'title' | 'accession' | 'date' | 'status' | 'tone'>;
+
+export function ContributionForm({ objectId, objects }: { objectId: string; objects: PickerObject[] }) {
   const router = useRouter();
   const [step, setStep] = useState(0);
   const [pending, setPending] = useState(false);
@@ -31,7 +33,8 @@ export function ContributionForm({ objectId }: { objectId: string }) {
     requestedOutcome: 'Correct the public label',
   });
 
-  const selected = collection.find((item) => item.id === form.objectId) ?? collection[0];
+  const selected = objects.find((item) => item.id === form.objectId) ?? objects[0];
+  if (!selected) return null;
   const field = (key: string, value: string) => setForm((current) => ({ ...current, [key]: value }));
 
   async function submit(event: FormEvent) {
@@ -78,7 +81,7 @@ export function ContributionForm({ objectId }: { objectId: string }) {
             </div>
             {picking && (
               <ul className="object-picker">
-                {collection.map((item) => (
+                {objects.map((item) => (
                   <li key={item.id}>
                     <button type="button" className={item.id === form.objectId ? 'selected' : ''} onClick={() => { field('objectId', item.id); setPicking(false); }}>
                       <strong>{item.title}</strong><small>{item.accession} · {item.date}</small>

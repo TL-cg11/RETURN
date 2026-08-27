@@ -1,6 +1,6 @@
 import { NavLink as Link } from '@/components/shared/nav-link';
 import { countByStatus, listSubmissions, SUBMISSION_STATUSES } from '@/db/queries';
-import { collection } from '@/lib/demo-data';
+import { collectionFor } from '@/lib/records';
 import { relativeTime, sessionFromCookies } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
@@ -18,6 +18,7 @@ function queryFor(status?: string, object?: string) {
 export default async function SubmissionsPage({ searchParams }: { searchParams: Search }) {
   const { status, object } = await searchParams;
   const { museumId } = await sessionFromCookies();
+  const collection = await collectionFor(museumId, 'curator');
   const active = SUBMISSION_STATUSES.includes(status as typeof SUBMISSION_STATUSES[number]) ? status : undefined;
   const activeObject = collection.some((item) => item.id === object) ? object : undefined;
 

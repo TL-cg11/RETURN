@@ -1,13 +1,16 @@
 import { NavLink as Link } from '@/components/shared/nav-link';
 import { listSubmissions } from '@/db/queries';
-import { collection } from '@/lib/demo-data';
+import { collectionFor } from '@/lib/records';
 import { relativeTime, sessionFromCookies } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
 export default async function ObjectsPage() {
   const { museumId } = await sessionFromCookies();
-  const submissions = await listSubmissions(museumId);
+  const [submissions, collection] = await Promise.all([
+    listSubmissions(museumId),
+    collectionFor(museumId, 'curator'),
+  ]);
 
   return (
     <main className="console-page">

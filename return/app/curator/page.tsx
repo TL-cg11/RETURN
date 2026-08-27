@@ -1,7 +1,7 @@
 import { NavLink as Link } from '@/components/shared/nav-link';
 import { listActivity, listSubmissions, workspaceSummary } from '@/db/queries';
 import { ApprovalTrigger } from '@/components/curator/approval-trigger';
-import { collection } from '@/lib/demo-data';
+import { collectionFor } from '@/lib/records';
 import { relativeTime, sessionFromCookies } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
@@ -10,10 +10,11 @@ const pad = (value: number) => String(value).padStart(2, '0');
 
 export default async function CuratorDashboard() {
   const { museumId } = await sessionFromCookies();
-  const [summary, submissions, activity] = await Promise.all([
+  const [summary, submissions, activity, collection] = await Promise.all([
     workspaceSummary(museumId),
     listSubmissions(museumId),
     listActivity(museumId, 5),
+    collectionFor(museumId, 'curator'),
   ]);
   const queue = submissions.slice(0, 5);
 

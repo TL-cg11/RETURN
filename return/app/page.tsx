@@ -1,8 +1,15 @@
 import { NavLink as Link } from '@/components/shared/nav-link';
 import { CommunityHeader } from '@/components/shared/community-header';
-import { collection, moonbird } from '@/lib/demo-data';
+import { collectionFor } from '@/lib/records';
+import { sessionFromCookies } from '@/lib/session';
 
-export default function Home() {
+export const dynamic = 'force-dynamic';
+
+export default async function Home() {
+  const { museumId } = await sessionFromCookies();
+  const collection = await collectionFor(museumId);
+  const moonbird = collection.find((object) => object.id === 'moonbird-mask') ?? collection[0];
+  if (!moonbird) return null;
   const gaps = collection.filter((object) => object.gap).length;
 
   return (

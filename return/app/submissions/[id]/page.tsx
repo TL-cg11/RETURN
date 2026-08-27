@@ -2,7 +2,7 @@ import { NavLink as Link } from '@/components/shared/nav-link';
 import { notFound } from 'next/navigation';
 import { getSubmission } from '@/db/queries';
 import { CommunityHeader } from '@/components/shared/community-header';
-import { collection } from '@/lib/demo-data';
+import { findObject } from '@/lib/records';
 import { relativeTime, sessionFromCookies } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
@@ -23,7 +23,7 @@ export default async function SubmissionStatus({ params }: { params: Promise<{ i
   const submission = await getSubmission(museumId, id);
   if (!submission) notFound();
 
-  const object = collection.find((item) => item.id === submission.object_id);
+  const object = await findObject(museumId, submission.object_id);
   const current = stageIndex(submission.status);
 
   return (

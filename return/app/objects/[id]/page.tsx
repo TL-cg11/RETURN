@@ -2,14 +2,15 @@ import { NavLink as Link } from '@/components/shared/nav-link';
 import { notFound } from 'next/navigation';
 import { LabelFlip } from '@/components/community/label-flip';
 import { CommunityHeader } from '@/components/shared/community-header';
-import { collection, moonbird } from '@/lib/demo-data';
 import { objectRecord } from '@/lib/records';
+import { sessionFromCookies } from '@/lib/session';
 
-export function generateStaticParams() { return collection.map((item) => ({ id: item.id })); }
+export const dynamic = 'force-dynamic';
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const item = collection.find((entry) => entry.id === id);
+  const { museumId } = await sessionFromCookies();
+  const item = await objectRecord(museumId, id);
   if (!item) return {};
   const description = `Provenance, questions and community context for ${item.title}.`;
   return {
@@ -22,9 +23,10 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
 
 export default async function ObjectPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const record = objectRecord(id);
+  const { museumId } = await sessionFromCookies();
+  const record = await objectRecord(museumId, id);
   if (!record) notFound();
-  const featured = record.id === moonbird.id;
+  const featured = record.id === 'moonbird-mask';
 
   return (
     <main>

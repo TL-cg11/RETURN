@@ -68,12 +68,9 @@ const activities = [
 export const proposedDraft =
   'The mask appears in a 1959 community photograph from Aru village. Its movement and acquisition circumstances from 1959 to 1968 remain under joint research.';
 
-function workspaceToken(museumId: string) {
-  return museumId.replace(/[^a-z0-9]/gi, '').slice(-4).toUpperCase();
-}
-
 export function buildSeedDataset(museumId: string, now = Date.now()) {
-  const token = workspaceToken(museumId);
+  // Submissions and approvals use a single global primary key, so seed ids must be
+  // unique per workspace. museumId is globally unique, matching the activities pattern.
   const publications = objects.map((object) => ({
     id: `LBL-${object.id}-R${object.version}`, objectId: object.id, title: object.title, body: object.label,
     assertions: object.id === 'moonbird-mask'
@@ -105,8 +102,8 @@ export function buildSeedDataset(museumId: string, now = Date.now()) {
     objects: objects.map((object) => ({ ...object, currentLabelId: `LBL-${object.id}-R${object.version}`, createdAt: now, updatedAt: now })),
     evidence: evidence.map((item) => ({ ...item, verifiedAt: item.verifiedBy ? now - 31 * 24 * HOUR : null, createdAt: now - 45 * 24 * HOUR, updatedAt: now - 2 * HOUR })),
     publications, timeline,
-    submissions: submissions.map((item) => ({ ...item, id: `${item.id}-${token}`, createdAt: now - item.age })),
+    submissions: submissions.map((item) => ({ ...item, id: `${item.id}-${museumId}`, createdAt: now - item.age })),
     activities: activities.map((item, index) => ({ ...item, id: `${museumId}-seed-${index}`, createdAt: now - item.age })),
-    approval: { id: `APR-004-${token}`, objectId: 'moonbird-mask', createdAt: now - 3 * MINUTE },
+    approval: { id: `APR-004-${museumId}`, objectId: 'moonbird-mask', createdAt: now - 3 * MINUTE },
   };
 }
