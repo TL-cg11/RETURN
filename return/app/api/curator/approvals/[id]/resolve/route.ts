@@ -47,7 +47,7 @@ function unavailable(status: string) {
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
-  const { role, museumId } = sessionFromRequest(request);
+  const { role, museumId } = await sessionFromRequest(request);
   if (role !== 'curator') return Response.json({ error: 'Curator role required' }, { status: 403 });
 
   const { id } = await params;
@@ -170,7 +170,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         consent: (storedConsents[index] ?? 'private') as Consent,
         visibility: 'public' as Visibility,
       }));
-  const policy = evaluatePolicy({ actor: 'curator_ui', action: 'publish_label', museumMatch: true, refs, publicOutput: true });
+  const museumMatch = approval.museum_id === museumId
+    && target.id === snapshotObjectId
+    && evidenceIds.every((evidenceId) => evidence.some((item) => item.id === evidenceId && item.objectId === approval.object_id));
+  const policy = evaluatePolicy({ actor: 'curator_ui', action: 'publish_label', museumMatch, refs, publicOutput: true });
   if (policy.outcome !== 'pending_approval') {
     const next = policy.recovery ?? 'Create a new proposal that satisfies publication policy.';
     return Response.json({ ...policy, policy: 'publication_policy_recheck', next, published: false }, { status: 409 });

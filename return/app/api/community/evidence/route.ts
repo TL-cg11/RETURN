@@ -5,19 +5,19 @@ import { findObject } from '@/lib/records';
 import { sessionFromRequest } from '@/lib/session';
 
 export async function POST(request: Request) {
-  const { role, museumId } = sessionFromRequest(request);
+  const { role, museumId } = await sessionFromRequest(request);
   if (role === 'curator') return Response.json({ error: 'Community role required' }, { status: 403 });
 
   const body = await request.json() as Record<string, string>;
-  const requestedObject = body.objectId ? await findObject(museumId, body.objectId) : null;
-  const fallbackObject = requestedObject ?? await findObject(museumId, 'moonbird-mask');
+  const requestedId = body.objectId?.trim();
+  const fallbackObject = await findObject(museumId, requestedId || 'moonbird-mask');
   if (!fallbackObject) return Response.json({ error: 'No public object is available' }, { status: 404 });
   const objectId = fallbackObject.id;
   const title = (body.title ?? '').trim();
   if (!title) return Response.json({ outcome: 'invalid', field: 'title', reason: 'A contribution needs a short title.', recovery: 'Add a title describing the material.' }, { status: 400 });
 
-  const policy = evaluatePolicy({ actor: 'community', action: 'submit_evidence', museumMatch: true });
-  const id = `SUB-${Math.floor(1100 + Math.random() * 8000)}`;
+  const policy = evaluatePolicy({ actor: role, action: 'submit_evidence', museumMatch: fallbackObject.id === (requestedId || 'moonbird-mask') });
+  const id = `SUB-${crypto.randomUUID().slice(0, 12).toUpperCase()}`;
   try {
     const db = await ensureDatabase(museumId);
     const now = Date.now();

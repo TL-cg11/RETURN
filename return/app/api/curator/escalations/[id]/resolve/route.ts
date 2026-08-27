@@ -12,7 +12,7 @@ type Action = keyof typeof ACTIONS;
  * curator saw the refusal and what they decided about it.
  */
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
-  const { role, museumId } = sessionFromRequest(request);
+  const { role, museumId } = await sessionFromRequest(request);
   if (role !== 'curator') return Response.json({ error: 'Curator role required' }, { status: 403 });
 
   const { id } = await params;

@@ -21,7 +21,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * which keeps a long demo from holding one worker invocation open forever.
  */
 export async function GET(request: Request) {
-  const { museumId } = sessionFromRequest(request);
+  const { museumId } = await sessionFromRequest(request);
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({

@@ -13,14 +13,14 @@ export type ActivityRow = {
   risk: string; policy_decision: string; result: string;
 };
 export type ApprovalRow = {
-  id: string; object_id: string; risk: string; snapshot: string; tool: string; args_snapshot: string; snapshot_hash: string;
+  id: string; museum_id: string; object_id: string; risk: string; snapshot: string; tool: string; args_snapshot: string; snapshot_hash: string;
   object_version: number; justification: string; refs_authority: string; refs_consent: string;
   status: string; resolution: string | null; verdict: string | null; edited_body: string | null; edit_reason: string | null;
   created_at: number; expires_at: number; resolved_at: number | null;
 };
 
 export type EscalationRow = {
-  id: string; object_id: string | null; tool: string; args: string; policy: string;
+  id: string; museum_id: string; object_id: string | null; tool: string; args: string; policy: string;
   source_refs: string; status: string; created_at: number; resolved_at: number | null;
 };
 
@@ -258,7 +258,7 @@ export async function createEscalation(museumId: string, entry: {
 
 export async function listEscalations(museumId: string, status = 'open', limit = 20) {
   const db = await ensureDatabase(museumId);
-  const result = await db.prepare('SELECT id,object_id,tool,args,policy,source_refs,status,created_at,resolved_at FROM escalations WHERE museum_id=? AND status=? ORDER BY created_at DESC LIMIT ?')
+  const result = await db.prepare('SELECT id,museum_id,object_id,tool,args,policy,source_refs,status,created_at,resolved_at FROM escalations WHERE museum_id=? AND status=? ORDER BY created_at DESC LIMIT ?')
     .bind(museumId, status, limit).all<EscalationRow>();
   return result.results ?? [];
 }
@@ -286,7 +286,7 @@ export async function workspaceRevision(museumId: string) {
 
 export async function getEscalation(museumId: string, id: string) {
   const db = await ensureDatabase(museumId);
-  return db.prepare('SELECT id,object_id,tool,args,policy,source_refs,status,created_at,resolved_at FROM escalations WHERE museum_id=? AND id=?')
+  return db.prepare('SELECT id,museum_id,object_id,tool,args,policy,source_refs,status,created_at,resolved_at FROM escalations WHERE museum_id=? AND id=?')
     .bind(museumId, id).first<EscalationRow>();
 }
 

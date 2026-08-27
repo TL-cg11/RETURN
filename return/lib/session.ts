@@ -1,7 +1,10 @@
 import { cookies } from 'next/headers';
+import { DEMO_MUSEUM, verifySession, type Session } from './session-cookie';
 
-export const DEMO_MUSEUM = 'museum_demo_01';
-export type Role = 'community' | 'curator';
+export * from './session-cookie';
+
+const ROLE_COOKIE = 'role';
+const MUSEUM_COOKIE = 'museum_id';
 
 function read(header: string | null, name: string) {
   const match = (header ?? '').match(new RegExp(`(?:^|; *)${name}=([^;]*)`));
@@ -9,21 +12,17 @@ function read(header: string | null, name: string) {
 }
 
 /** Session for route handlers, which receive the request directly. */
-export function sessionFromRequest(request: Request) {
+export async function sessionFromRequest(request: Request): Promise<Session> {
   const header = request.headers.get('cookie');
-  return {
-    role: (read(header, 'role') === 'curator' ? 'curator' : 'community') as Role,
-    museumId: read(header, 'museum_id') ?? DEMO_MUSEUM,
-  };
+  return await verifySession(read(header, ROLE_COOKIE), read(header, MUSEUM_COOKIE))
+    ?? { role: 'community', museumId: DEMO_MUSEUM };
 }
 
 /** Session for server components, which read the request cookie jar. */
-export async function sessionFromCookies() {
+export async function sessionFromCookies(): Promise<Session> {
   const jar = await cookies();
-  return {
-    role: (jar.get('role')?.value === 'curator' ? 'curator' : 'community') as Role,
-    museumId: jar.get('museum_id')?.value ?? DEMO_MUSEUM,
-  };
+  return await verifySession(jar.get(ROLE_COOKIE)?.value ?? null, jar.get(MUSEUM_COOKIE)?.value ?? null)
+    ?? { role: 'community', museumId: DEMO_MUSEUM };
 }
 
 /** Compact relative time for record timestamps. */
