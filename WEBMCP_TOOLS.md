@@ -8,16 +8,17 @@
 
 | 항목 | 결정 |
 |---|---|
-| 카탈로그 총량 | **19개** — Community **6** + Curator **13** |
-| 최대 동시 노출 | **13개** (role-scoped 등록, 두 surface 동시 로드 없음) |
-| 개수 방향 | 늘리지 않음. "고도화"는 **개수가 아니라 계약(schema·annotation·응답·정책 바인딩)** |
+| 카탈로그 총량 | **22개** (고유 이름 기준) — Community 전용 **7** + Curator 전용 **13** + **Shared 2** |
+| 최대 동시 노출 | **15개** — Curator 표면에 등록되는 총량(고유 13 + Shared 2). Community 표면은 9개. role-scoped 등록이므로 두 surface 동시 로드는 없음 |
+| 개수 방향 | **FR-X2에서 완화됨.** 자산 파이프라인이 범위에 들어오면서 FR-W1의 3개를 추가했다. 그 외에는 여전히 늘리지 않으며, "고도화"는 **개수가 아니라 계약(schema·annotation·응답·정책 바인딩)** |
+| Shared surface | `list_object_assets` · `get_asset_detail` 은 **양쪽 표면에 등록된다.** 같은 호출이 역할에 따라 다르게 답해야 하기 때문이다 — 커뮤니티는 public·공개동의 자산만, 큐레이터는 restricted 까지. 허용 여부가 아니라 **내용**이 역할에 따라 갈린다 |
 | 병합 여부 | `build_provenance_timeline`과 `compare_evidence`는 **분리 유지** (Swiss-army 다기능 툴 회피) |
 | 신규 | `get_evidence_detail` — consent/visibility redaction, `sealed` 존재 은닉 |
 | 개명 | `draft_label` → **`save_label_draft`** (내부 draft를 저장하므로 write) |
 | 계약 수정 | `readOnlyHint` 모순 제거, 4개 표준 annotation 명시, `untrustedContentHint`는 비표준 → compat 격리 + 응답 `trust` 병행 |
 | 삭제/추가 금지 | evidence 삭제·authority 승격·실제 반환 툴은 **추가하지 않음** (권한 모델 위배) |
 
-**왜 개수를 안 늘리나:** 두 surface는 역할별로만 등록되어 모델이 한 번에 보는 최대치는 13개다. 툴 품질의 80%는 스키마·계약에서 나오며, 대규모·중복 surface는 선택 정확도와 컨텍스트 효율을 떨어뜨린다. (출처: [Anthropic — Writing tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents), [MCP Tool Schema Design 2026](https://kansei-link.com/en/insights/mcp-tool-schema-design-guide-2026.html))
+**왜 개수를 안 늘리나:** 두 surface는 역할별로만 등록되어 모델이 한 번에 보는 최대치는 15개다(Curator 표면). 툴 품질의 80%는 스키마·계약에서 나오며, 대규모·중복 surface는 선택 정확도와 컨텍스트 효율을 떨어뜨린다. (출처: [Anthropic — Writing tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents), [MCP Tool Schema Design 2026](https://kansei-link.com/en/insights/mcp-tool-schema-design-guide-2026.html))
 
 ---
 
@@ -75,6 +76,8 @@
 
 ## 2. Community 툴 (6) — `/` 공개 컬렉션
 
+> FR-W1의 `attach_assets` 를 더해 Community 표면은 실제로 **7개**다. 계약은 §3B.1 에 있다.
+
 > 범주 원칙(각 description에 baked-in):
 > **Reads are free. Contributions add evidence to review; they do not change the official record.**
 
@@ -123,7 +126,7 @@
       "name":{"type":"string","maxLength":120},"relationship":{"type":"string","maxLength":120}}},
     "provenance":{"type":"object","additionalProperties":false,"properties":{
       "date_or_period":{"type":"string","maxLength":60},"place":{"type":"string","maxLength":120}}},
-    "consent":{"enum":["private","research_only","public_anonymous","public_attributed"]} } }
+    "consent":{"enum":["private","public_anonymous","public_attributed"]} } }
 ```
 - annotations: `readOnly:false, destructive:false, idempotent:false, openWorld:false`
 - 서버는 항상 `authority:"submitted", status:"received"`로 저장. **agent가 `verified` 전달 불가.**
@@ -216,7 +219,7 @@
 { "type":"object","additionalProperties":false,"required":["evidence_id"],
   "properties":{ "evidence_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{3,64}$"} } }
 ```
-- 개별 evidence 원문을 **consent·visibility에 따라 redaction**하여 반환. `research_only`/`private`은 직접 인용 불가로 표기하되 메타데이터는 노출.
+- 개별 evidence 원문을 **consent·visibility에 따라 redaction**하여 반환. `private`은 직접 인용 불가로 표기하되 메타데이터는 노출.
 - **`sealed`는 존재 자체를 숨긴다:** 존재하지 않는 ID와 **완전히 동일한** 응답을 반환해야 한다 — `{status:"invalid", field:"evidence_id", message:"No evidence with that id.", next, retryable:true}`. `policy:"sealed_hidden"` 같은 구별되는 거부를 반환하면 "그 ID에 sealed 자료가 있다"는 사실이 새어나가므로 금지. (sealed 접근 시도는 서버 audit log에만 별도 기록.)
 - 1.5K 응답 예산에서 case 요약(§3.4)과 원문 조회를 분리하는 목적.
 
@@ -259,7 +262,7 @@
         "rationale":{"type":"string","maxLength":2000},
         "refs":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":24}}} } }
 ```
-- 정책: refs 비면 거부 · 전부 submitted면 거부+escalation · private/research_only 직접 인용 포함 시 거부 · `verified_fact`가 submitted-only면 거부 · 검증 근거 있어도 **HIGH → approval queue** · 승인 직전 draft snapshot hash 재비교.
+- 정책: refs 비면 거부 · 전부 submitted면 거부+escalation · private 직접 인용 포함 시 거부 · `verified_fact`가 submitted-only면 거부 · 검증 근거 있어도 **HIGH → approval queue** · 승인 직전 draft snapshot hash 재비교.
 - 즉시 게시 아님. `{status:"pending_approval", approval_id, next}` 반환.
 
 ### 3.11 `open_return_review` — HIGH · write · approval queue
@@ -290,6 +293,74 @@
 
 ---
 
+## 3B. 자산 툴 (FR-W1) — Community 1 + Shared 2
+
+**어느 툴도 바이너리를 받지 않는다.** 업로드는 전용 라우트(`POST /api/assets`)가 처리해 `assets`
+레코드를 먼저 만들고, 툴은 `asset_ids` 만 주고받는다 (`RETURN_PLAN.md` §15.1). 툴 응답에
+`storage_key` 는 절대 포함되지 않는다.
+
+### 3B.1 `attach_assets` — MEDIUM · Community 전용
+
+```json
+{ "submission_id": {"type":"string"},
+  "asset_ids": {"type":"array","items":{"type":"string"}} }
+```
+
+- 이미 업로드된 자산을 **자기 기여에** 연결한다. 자산은 기여의 `consent` 와 대상 유물을 상속한다.
+- `visibility` 는 건드리지 않는다. 첨부해도 `restricted` 로 남으며, 공개는 큐레이터의 행위다.
+- 이미 다른 기여에 붙은 id 는 매칭되지 않는다. 그래서 `attached` 가 `requested` 보다 작게 돌아올 수 있고,
+  이것이 남의 기여에 파일을 밀어 넣지 못하게 하는 방식이다.
+- 응답: `attached` · `requested` · `total_on_contribution` · `visibility:"restricted"`.
+
+### 3B.2 `list_object_assets` — LOW · read · Shared
+
+```json
+{ "object_id": {"type":"string"} }
+```
+
+- 한 유물에 붙은 자산 목록을 `assetAccess` 로 걸러 반환한다.
+- `restricted` 는 **개수만** `withheld_count` 로 알린다 — 무언가가 보류돼 있다는 사실은 정직하게 밝히되,
+  그것이 무엇인지는 밝히지 않는다.
+- `sealed` 는 `withheld_count` 에도 포함되지 않는다. 개수 자체가 존재의 누설이기 때문이다 (§5.3).
+  큐레이터 표면에서도 마찬가지다 — sealed 는 인간 절차로만 열린다.
+- `untrusted_content: true`.
+
+### 3B.3 `get_asset_detail` — LOW · read · Shared
+
+```json
+{ "asset_id": {"type":"string"} }
+```
+
+- 자산 하나의 메타데이터. **파일 내용은 반환하지 않는다.**
+- `sealed` 와 타 워크스페이스 자산은 존재하지 않는 id 와 **동일한 응답**(`invalid`)을 준다.
+  403 은 그 자체로 존재의 확인이 되기 때문이다.
+- 권한이 없는 `restricted`·`private` 은 `denied` + `consent_not_public` + recovery 를 준다.
+  거부는 dead end 가 아니다 (§9.6).
+
+---
+
+## 3C. `register_object` (FR-K5 · FR-X3) — HIGH · Curator 전용
+
+```json
+{ "title": {"type":"string"}, "accession": {"type":"string"}, "basis": {"type":"string"},
+  "period": {"type":"string"}, "material": {"type":"string"}, "origin": {"type":"string"},
+  "evidence_ids": {"type":"array","items":{"type":"string"}} }
+```
+
+**결정 (FR-X3):** 새 유물 등록은 커뮤니티에 노출하지 않는다. 큐레이터 UI와 큐레이터 도구
+표면 양쪽에서 가능하되, **도구는 제안만 하고 기록을 만들지 않는다.**
+
+- 위험 등급 **HIGH**. 새 유물은 공식 기록을 만드는 행위이므로 `publish_label` 과 같은 칸에 선다
+- 검증된 근거가 있으면 `pending_approval` + 제안이 큐에 남고, 응답은 `created:false` 를 명시한다
+- submitted 자료만 인용하면 `submitted_sole_authority` 로 거부하고 escalation 을 만든다
+- 제안은 **approval 이 아니라 escalation 큐**에 들어간다. approval 계약(A4)은 불변 라벨
+  스냅샷이고 제안된 기록은 그 형태가 아니다. escalation 은 이미 tool·args·큐레이터 조치를 담는다
+- 실제 생성은 `POST /api/curator/objects` 가 하며, `confirmed: true` 없이는 409 로 거부한다.
+  HIGH 판정이 인간 행위자에게 뜻하는 바가 "명시적 결정"이므로, 폼을 채우는 것만으로는 기록이
+  생기지 않는다
+
+---
+
 ## 4. 원래 18개 대비 변경 이력
 
 | 구분 | 변경 | 사유 |
@@ -307,15 +378,79 @@
 
 ## 5. Eval 수용 게이트 & 안전 밸브
 
-계약 정리 후 대표 WebMCP eval에서 아래를 만족하면 현행 surface 유지:
-- 툴 선택 + **필수 인자** 정확도 **≥ 95%**
-- 인접(유사) 툴 혼동율 **≤ 2%**
-- 툴 정의 토큰 예산 충족(정의당 100–500 토큰 수준)
+게이트는 세 조항이고, **둘은 카탈로그의 성질이라 지금 측정되며, 하나는 모델의 성질이라
+모델 실행이 필요하다.** 이 구분을 흐리지 않는다.
 
-**실패 시**(위 미달): Curator surface를 **단계별 동적 노출 7–9개**로 축소한다 — 예: 기본 노출 = summary/list_objects/list_submissions/get_review_case/get_evidence_detail/compare_evidence/save_label_draft, 승인·검토 개시(propose_label_update/open_return_review/check_approval/list_pending_approvals)는 case 진입 후 lazy 등록. "고정 개수 절벽"이 아니라 중복도·설명 품질·컨텍스트 비용으로 판단한다. (출처: [Anthropic — Advanced tool use](https://www.anthropic.com/engineering/advanced-tool-use))
+```bash
+npm run eval:tools                                  # 정적 게이트
+npm run eval:tools -- --prompts                     # 7개 시나리오 프롬프트
+npm run eval:tools -- --score answers.json          # 모델이 실제 호출한 것을 채점
+```
+
+정적 절반은 `lib/webmcp/eval.ts`에 있고 단위 테스트로도 돈다. 도구가 하나 추가될 때마다
+조용히 나빠지는 종류의 값이라, 릴리스 직전이 아니라 매 테스트에서 확인한다.
+
+### 5.1 측정된 값 (FR-W1·FR-K5 이후 22개 기준)
+
+| 조항 | 목표 | 측정 | 판정 |
+|---|---|---|---|
+| 정의당 컨텍스트 비용 | ≤ 500 토큰 | **23–162** (추정) | 통과 |
+| 표면당 등록 비용 | — | Community 9개 **~647** · Curator 15개 **~1035** | 통과 |
+| 인접 툴 유사도 | < 0.5 | 최고 **0.227** (`get_object_detail` ↔ `get_provenance_timeline`) | 통과 |
+| 툴 선택 + 필수 인자 정확도 | ≥ 95% | **미측정** | 모델 실행 필요 |
+| 인접 툴 혼동율 | ≤ 2% | **미측정** | 모델 실행 필요 |
+
+§0이 지목했던 위험 쌍은 모두 낮게 나왔다. 실제로 가장 가까운 것은 HIGH 3종
+(`propose_label_update` 0.222 `open_return_review`, 0.182 `register_object`)인데,
+셋 다 `evidence_ids`를 받고 셋 다 공식 기록을 건드리니 어휘가 겹치는 것이 당연하다.
+그래도 0.5와는 거리가 멀다.
+
+### 5.2 토큰 하한을 걷어낸 이유
+
+이 문서는 원래 정의당 **100–500 토큰**을 요구했다. 실측하면 22개 중 **4개만** 100을 넘는다.
+
+`list_pending_approvals`는 23토큰이다 — "List unresolved consequential actions awaiting a
+human curator." 에 파라미터가 없다. 이걸 100토큰으로 만들려면 아무 정보도 더하지 않는 말을
+채워야 하고, 그건 선택 정확도를 **떨어뜨린다.** 신호를 희석하기 때문이다.
+
+하한이 잡으려던 것은 "고를 수 없을 만큼 빈약한 정의"였으므로, 그것을 직접 잰다:
+
+- 설명은 **8단어 이상의 완결된 문장**이어야 한다
+- 같은 표면의 두 도구는 서로 닮아서는 안 된다 (§5.1의 유사도)
+- **쓰기 도구는 자기가 하지 *않는* 일을 말해야 한다.** `not` / `never` / `without` /
+  `review` / `approval` 중 하나가 설명에 있어야 통과한다. 에이전트가 자기 호출을 최종적이라
+  믿는 것이 이 제품이 막으려는 실패다
+
+셋 다 단위 테스트다. 상한(500)은 컨텍스트 비용에 대한 진짜 제약이므로 그대로 둔다.
+
+### 5.3 실패 시 안전 밸브
+
+**모델 실행이 미달하면**: Curator surface를 **단계별 동적 노출 7–9개**로 축소한다 —
+기본 노출 = summary / list_objects / list_submissions / get_review_case / compare_evidence /
+draft_label, 승인·검토 개시(`propose_label_update` · `open_return_review` · `check_approval` ·
+`list_pending_approvals` · `register_object`)는 case 진입 후 lazy 등록. 자산 읽기 2종은
+유물 화면에서만 등록한다.
+
+"고정 개수 절벽"이 아니라 중복도·설명 품질·컨텍스트 비용으로 판단한다.
+(출처: [Anthropic — Advanced tool use](https://www.anthropic.com/engineering/advanced-tool-use))
+
+### 5.4 시나리오 7종
+
+`RETURN_PLAN.md` §20.3의 프롬프트를 `lib/webmcp/eval.ts`의 `EVAL_SCENARIOS`에 채점 가능한
+형태로 고정했다. 각 항목은 프롬프트·기대 도구·기대 필수 인자·**decoy**(혼동한 모델이 대신
+집을 법한 같은 표면의 도구)를 가진다. decoy가 있어야 혼동율이 계산된다.
+
+| id | 역할 | 재는 것 |
+|---|---|---|
+| `gap-search` | community | 컬렉션 전체 질문을 단건 읽기로 착각하지 않는가 |
+| `photo-to-object` | community | 자료를 내밀기 전에 대상을 먼저 찾는가 |
+| `submit-evidence` | community | 주장이 아닌 자료로 다루고 consent를 함께 싣는가 |
+| `triage-batch` | curator | 목록·단건·집계를 구분하는가 |
+| `draft-label` | curator | 초안이 제안으로 넘어가지 않는가 |
+| `denied-recovery` | curator | 게이트웨이 거부 후 같은 호출을 반복하지 않고 `next`를 따르는가 |
+| `approval-polling` | curator | 아는 id면 조회, 폴링이 다른 작업을 막지 않는가 |
 
 ---
-
 ## 6. 구현 타당성 검토 (Implementation feasibility)
 
 실제 `return/` 코드와 대조해 구현 시 걸릴 지점과 처리 방침을 정리한다.

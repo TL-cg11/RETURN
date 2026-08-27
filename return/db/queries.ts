@@ -5,7 +5,7 @@ export type SubmissionRow = {
   id: string; museum_id: string; object_id: string; kind: string; title: string;
   description: string; source: string; consent: string; requested_outcome: string;
   contributor_name: string | null; contributor_role: string | null; evidence_refs: string;
-  status: string; created_at: number; updated_at: number;
+  status: string; details: string; asset_ids: string; created_at: number; updated_at: number;
 };
 export type ActivityRow = {
   id: string; actor: string; action: string; detail: string; created_at: number;
@@ -161,7 +161,7 @@ function evidenceVisibility(access: EvidenceAccess) {
 }
 
 function mapEvidence(row: EvidenceRow, access: EvidenceAccess): EvidenceRecord {
-  const withheld = access !== 'curator' && (row.visibility !== 'public' || row.consent === 'private' || row.consent === 'research_only');
+  const withheld = access !== 'curator' && (row.visibility !== 'public' || row.consent === 'private');
   const anonymous = access !== 'curator' && row.consent === 'public_anonymous';
   return {
     id: row.id, objectId: row.object_id, type: row.type, title: row.title,
@@ -219,10 +219,16 @@ export async function countByStatus(museumId: string) {
   return counts;
 }
 
-export async function listActivity(museumId: string, limit = 20) {
+export async function listActivity(museumId: string, limit = 20, offset = 0) {
   const db = await ensureDatabase(museumId);
-  const result = await db.prepare('SELECT id,actor,action,detail,created_at,actor_role,actor_type,tool,target,risk,policy_decision,result FROM activity WHERE museum_id=? ORDER BY created_at DESC LIMIT ?').bind(museumId, limit).all<ActivityRow>();
+  const result = await db.prepare('SELECT id,actor,action,detail,created_at,actor_role,actor_type,tool,target,risk,policy_decision,result FROM activity WHERE museum_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?').bind(museumId, limit, offset).all<ActivityRow>();
   return result.results ?? [];
+}
+
+export async function countActivity(museumId: string) {
+  const db = await ensureDatabase(museumId);
+  const row = await db.prepare('SELECT COUNT(*) AS total FROM activity WHERE museum_id=?').bind(museumId).first<{ total: number }>();
+  return row?.total ?? 0;
 }
 
 function actorDefaults(actor: string): Required<Pick<ActivityMetadata, 'actorRole' | 'actorType'>> {
@@ -338,6 +344,133 @@ export async function workspaceSummary(museumId: string) {
     new_submissions: submissions.filter((row) => row.status === 'received').length,
     total_submissions: submissions.length,
     pending_approvals: approvals.length,
-    consent_alerts: submissions.filter((row) => row.consent === 'research_only' || row.consent === 'private').length,
+    consent_alerts: submissions.filter((row) => row.consent === 'private').length,
   };
+}
+
+export type AssetRow = {
+  id: string; museum_id: string; object_id: string | null; submission_id: string | null; evidence_id: string | null;
+  kind: string; content_type: string; storage_key: string; file_name: string; alt_text: string; caption: string;
+  visibility: string; consent: string; byte_size: number; width: number | null; height: number | null;
+  sort_order: number; uploaded_by: string; created_at: number; updated_at: number;
+};
+
+const ASSET_COLUMNS = 'id,museum_id,object_id,submission_id,evidence_id,kind,content_type,storage_key,file_name,alt_text,caption,visibility,consent,byte_size,width,height,sort_order,uploaded_by,created_at,updated_at';
+
+export async function insertAsset(museumId: string, asset: Omit<AssetRow, 'museum_id'>) {
+  const db = await ensureDatabase(museumId);
+  await db.prepare(`INSERT INTO assets (${ASSET_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(asset.id, museumId, asset.object_id, asset.submission_id, asset.evidence_id, asset.kind, asset.content_type,
+      asset.storage_key, asset.file_name, asset.alt_text, asset.caption, asset.visibility, asset.consent,
+      asset.byte_size, asset.width, asset.height, asset.sort_order, asset.uploaded_by, asset.created_at, asset.updated_at).run();
+}
+
+/** Reads the row unfiltered. Every caller must run `assetAccess` before serving it. */
+export async function getAsset(museumId: string, id: string) {
+  const db = await ensureDatabase(museumId);
+  return db.prepare(`SELECT ${ASSET_COLUMNS} FROM assets WHERE museum_id=? AND id=? LIMIT 1`).bind(museumId, id).first<AssetRow>();
+}
+
+export async function listObjectAssets(museumId: string, objectId: string) {
+  const db = await ensureDatabase(museumId);
+  const result = await db.prepare(`SELECT ${ASSET_COLUMNS} FROM assets WHERE museum_id=? AND object_id=? ORDER BY sort_order, created_at`).bind(museumId, objectId).all<AssetRow>();
+  return result.results ?? [];
+}
+
+export async function listSubmissionAssets(museumId: string, submissionId: string) {
+  const db = await ensureDatabase(museumId);
+  const result = await db.prepare(`SELECT ${ASSET_COLUMNS} FROM assets WHERE museum_id=? AND submission_id=? ORDER BY sort_order, created_at`).bind(museumId, submissionId).all<AssetRow>();
+  return result.results ?? [];
+}
+
+export async function countSubmissionAssets(museumId: string, submissionId: string) {
+  const db = await ensureDatabase(museumId);
+  const row = await db.prepare('SELECT COUNT(*) AS total FROM assets WHERE museum_id=? AND submission_id=?').bind(museumId, submissionId).first<{ total: number }>();
+  return row?.total ?? 0;
+}
+
+/**
+ * Attaches already-uploaded assets to a contribution.
+ *
+ * The asset inherits the contribution's consent and the object it is about. Without
+ * the object id an attached file would never appear in `list_object_assets`, not even
+ * after a curator published it, because that query keys on `object_id`. Visibility is
+ * untouched and stays `restricted`, so the file sits on the object's record as pending
+ * material a curator can see and the public cannot.
+ *
+ * Only unattached assets in this workspace move, so an id belonging to someone else's
+ * contribution simply does not match and the returned count is lower than the ids given.
+ */
+export async function attachAssetsToSubmission(museumId: string, submissionId: string, assetIds: string[], consent: string, objectId?: string, altText?: Record<string, string>) {
+  if (assetIds.length === 0) return 0;
+  const db = await ensureDatabase(museumId);
+  const now = Date.now();
+  const holes = assetIds.map(() => '?').join(',');
+  const result = await db.prepare(`UPDATE assets SET submission_id=?, consent=?, object_id=COALESCE(?,object_id), updated_at=? WHERE museum_id=? AND id IN (${holes}) AND submission_id IS NULL`)
+    .bind(submissionId, consent, objectId ?? null, now, museumId, ...assetIds).run();
+  // Alt text is per asset, so it cannot ride the single UPDATE above. Only assets this
+  // call just claimed are touched, so a stray id cannot relabel someone else's file.
+  const described = Object.entries(altText ?? {}).filter(([id, text]) => assetIds.includes(id) && text.trim());
+  if (described.length > 0) {
+    await db.batch(described.map(([id, text]) => db.prepare('UPDATE assets SET alt_text=?, updated_at=? WHERE museum_id=? AND id=? AND submission_id=?')
+      .bind(text.trim().slice(0, 300), now, museumId, id, submissionId)));
+  }
+  return result.meta?.changes ?? 0;
+}
+
+/** Opens or withdraws one asset from public display. Consent is judged by the caller. */
+export async function setAssetVisibility(museumId: string, id: string, visibility: 'public' | 'restricted') {
+  const db = await ensureDatabase(museumId);
+  const result = await db.prepare("UPDATE assets SET visibility=?, updated_at=? WHERE museum_id=? AND id=? AND visibility<>'sealed'")
+    .bind(visibility, Date.now(), museumId, id).run();
+  return (result.meta?.changes ?? 0) > 0;
+}
+
+/**
+ * Contributions about one object that consent permits showing publicly (FR-O2).
+ *
+ * `private` material is excluded in SQL rather than filtered afterwards, so a
+ * rendering mistake downstream cannot put it on a public page. Attribution is the
+ * caller's decision: `public_anonymous` permits the content but not the name.
+ */
+export async function listPublicContributions(museumId: string, objectId: string) {
+  const db = await ensureDatabase(museumId);
+  const result = await db.prepare("SELECT * FROM submissions WHERE museum_id=? AND object_id=? AND consent IN ('public_attributed','public_anonymous') ORDER BY created_at DESC")
+    .bind(museumId, objectId).all<SubmissionRow>();
+  return result.results ?? [];
+}
+
+export type NewObjectInput = {
+  id: string; accession: string; title: string; description: string; period: string;
+  objectType: string; material: string; origin: string; acquisitionDate: string | null;
+  recordStatus: string; tone: string; questions: string[]; label: string;
+};
+
+/**
+ * Creates one object with its first published label (FR-K5).
+ *
+ * The label is a real revision 1 rather than a column on the object, so a new record
+ * enters the same publication history every other object has and `labelRevision`
+ * counts from the same place.
+ */
+export async function createObject(museumId: string, input: NewObjectInput, approvedBy: string) {
+  const db = await ensureDatabase(museumId);
+  const now = Date.now();
+  const labelId = `LBL-${input.id}-R1`;
+  const clash = await db.prepare('SELECT id FROM objects WHERE museum_id=? AND (id=? OR accession_number=?) LIMIT 1')
+    .bind(museumId, input.id, input.accession).first<{ id: string }>();
+  if (clash) return { created: false as const, clash: clash.id };
+  await db.batch([
+    db.prepare('INSERT INTO objects (id,museum_id,accession_number,title,description,origin,period,object_type,material,acquisition_date,current_label_id,visibility,provenance_completeness,provenance_gap,record_status,display_tone,questions,version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .bind(input.id, museumId, input.accession, input.title, input.description, input.origin, input.period,
+        input.objectType, input.material, input.acquisitionDate, labelId, 'public', 0, null,
+        input.recordStatus, input.tone, JSON.stringify(input.questions), 1, now, now),
+    db.prepare('INSERT INTO label_publications (id,museum_id,object_id,title,body,assertions,evidence_refs,revision_number,approved_by,published_at,superseded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .bind(labelId, museumId, input.id, input.title, input.label, '[]', '[]', 1, approvedBy, now, null),
+    db.prepare('INSERT INTO provenance_events (id,museum_id,object_id,start_date,end_date,title,detail,custodian,location,status,authority,evidence_refs,is_gap,sort_order,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .bind(`PE-${input.id}-ACQ`, museumId, input.id, input.acquisitionDate ?? input.period, null, 'Museum acquisition',
+        `Entered the collection as ${input.accession}.`, 'The Halcyon Museum of Material Memory', null,
+        'verified', 'verified', '[]', 0, 10, now, now),
+  ]);
+  return { created: true as const, labelId };
 }

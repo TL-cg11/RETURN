@@ -2,7 +2,7 @@
 
 import { NavLink as Link } from '@/components/shared/nav-link';
 import { usePathname, useRouter } from 'next/navigation';
-import { ReactNode, useEffect, useRef, useState } from 'react';
+import { ReactNode, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { registerWebMcpTools } from '@/lib/webmcp/register';
 import { useLiveRecord } from '@/lib/live/use-live-record';
 import { curatorTools } from '@/lib/webmcp/tools';
@@ -27,6 +27,31 @@ const RISK_LADDER = [
   ['CRITICAL', 'Delete evidence, transfer custody', 'Never available to an agent'],
 ] as const;
 
+/**
+ * FR-K1 — the collapsed navigation state.
+ *
+ * Kept outside React because navigation here is a full page load (see
+ * components/shared/nav-link.tsx), so component state would reset on every click.
+ * Read through `useSyncExternalStore` rather than an effect: the server snapshot is
+ * `false`, so the markup matches on hydration and no state is set during an effect.
+ * The `storage` event keeps two open console tabs in agreement.
+ */
+const NAV_KEY = 'console-nav';
+const NAV_EVENT = 'console-nav-change';
+
+function readNavCollapsed() {
+  try { return localStorage.getItem(NAV_KEY) === 'collapsed'; } catch { return false; }
+}
+
+function subscribeNav(onChange: () => void) {
+  window.addEventListener(NAV_EVENT, onChange);
+  window.addEventListener('storage', onChange);
+  return () => {
+    window.removeEventListener(NAV_EVENT, onChange);
+    window.removeEventListener('storage', onChange);
+  };
+}
+
 export function CuratorShell({
   children, approval, pendingCount, submissionCount,
 }: {
@@ -36,6 +61,7 @@ export function CuratorShell({
   const router = useRouter();
   const [drawer, setDrawer] = useState(false);
   const [panel, setPanel] = useState<'tools' | 'policy' | null>(null);
+  const collapsed = useSyncExternalStore(subscribeNav, readNavCollapsed, () => false);
   const [mcpAvailable, setMcpAvailable] = useState<boolean | null>(null);
   const [draft, setDraft] = useState(approval?.snapshot ?? '');
   const [resolved, setResolved] = useState('');
@@ -44,6 +70,11 @@ export function CuratorShell({
   const labelDiff = approval ? diffLabelText(approval.currentLabel, draft) : [];
 
   useEffect(() => registerWebMcpTools('curator'), []);
+
+  function toggleNav() {
+    try { localStorage.setItem(NAV_KEY, collapsed ? 'open' : 'collapsed'); } catch { /* storage may be unavailable */ }
+    window.dispatchEvent(new Event(NAV_EVENT));
+  }
   const liveTransport = useLiveRecord();
 
   // Reset the editable draft when a different approval arrives, during render
@@ -113,7 +144,7 @@ export function CuratorShell({
   }
 
   return (
-    <div className="console-shell">
+    <div className={`console-shell${collapsed ? ' nav-collapsed' : ''}`}>
       <header className="console-topbar">
         <Link className="wordmark inverse" href="/curator">RE<span>:</span>TURN</Link>
         <div className="console-context"><b>Halcyon Museum</b><span>Curatorial workspace</span></div>
@@ -122,12 +153,16 @@ export function CuratorShell({
             <i>{pendingCount}</i> {approval ? 'Pending approval' : 'No pending approval'}
           </button>
           <button type="button" className="role-switch dark" onClick={switchToCommunity}>Community view ↗</button>
-          <span className="avatar">MK</span>
+          <span className="avatar">NZ</span>
         </div>
       </header>
 
       <aside className="console-nav">
-        <div>
+        <button type="button" className="nav-collapse" onClick={toggleNav} aria-expanded={!collapsed} aria-controls="console-nav-items" title={collapsed ? 'Expand navigation' : 'Collapse navigation'}>
+          <span aria-hidden="true">{collapsed ? '»' : '«'}</span>
+          <em>{collapsed ? 'Expand' : 'Collapse'}</em>
+        </button>
+        <div id="console-nav-items">
           <small>Workspace</small>
           {NAV.map((item) => (
             <Link className={path === item.href ? 'active' : ''} href={item.href} key={item.href}>

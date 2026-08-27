@@ -12,8 +12,9 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
     "deploy": "wrangler deploy -c dist/server/wrangler.json",
-    "test": "node --experimental-strip-types --test lib/policy/rules.test.ts lib/webmcp/register.test.ts lib/label-diff.test.ts lib/approval-snapshot.test.ts lib/session.test.ts",
+    "test": "node --experimental-strip-types --test lib/policy/rules.test.ts lib/webmcp/register.test.ts lib/label-diff.test.ts lib/approval-snapshot.test.ts lib/session.test.ts lib/assets/access.test.ts lib/community/contribution.test.ts lib/webmcp/eval.test.ts",
     "test:smoke": "node scripts/smoke.mjs",
+    "eval:tools": "node --experimental-strip-types scripts/tool-eval.mjs",
     "typecheck": "tsc --noEmit",
     "verify": "npm run lint && npm run typecheck && npm test && npm run build"
   },

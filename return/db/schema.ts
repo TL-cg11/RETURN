@@ -6,7 +6,8 @@ export const submissions = sqliteTable('submissions', {
   id:text('id').primaryKey(), museumId:text('museum_id').notNull(), objectId:text('object_id').notNull(), kind:text('kind').notNull(), title:text('title').notNull(),
   description:text('description').notNull(), source:text('source').notNull(), consent:text('consent').notNull(), requestedOutcome:text('requested_outcome').notNull(),
   contributorName:text('contributor_name'), contributorRole:text('contributor_role'), evidenceRefs:text('evidence_refs').notNull().default('[]'),
-  status:text('status').notNull().default('received'), createdAt:integer('created_at').notNull(), updatedAt:integer('updated_at').notNull().default(0),
+  status:text('status').notNull().default('received'), details:text('details').notNull().default('[]'), assetIds:text('asset_ids').notNull().default('[]'),
+  createdAt:integer('created_at').notNull(), updatedAt:integer('updated_at').notNull().default(0),
 }, (table) => [index('idx_submissions_museum_status').on(table.museumId, table.status)]);
 export const approvals = sqliteTable('approvals', {
   id:text('id').primaryKey(), museumId:text('museum_id').notNull(), objectId:text('object_id').notNull(), risk:text('risk').notNull(), snapshot:text('snapshot').notNull(),
@@ -51,7 +52,7 @@ export const evidence = sqliteTable('evidence', {
   primaryKey({ columns: [table.museumId, table.id] }),
   index('idx_evidence_museum_object').on(table.museumId, table.objectId, table.visibility),
   check('evidence_authority_check', sql`${table.authority} IN ('submitted','verified')`),
-  check('evidence_consent_check', sql`${table.consent} IN ('private','research_only','public_anonymous','public_attributed')`),
+  check('evidence_consent_check', sql`${table.consent} IN ('private','public_anonymous','public_attributed')`),
   check('evidence_visibility_check', sql`${table.visibility} IN ('public','restricted','sealed')`),
 ]);
 
@@ -75,4 +76,20 @@ export const labelPublications = sqliteTable('label_publications', {
   primaryKey({ columns: [table.museumId, table.id] }),
   uniqueIndex('uq_labels_museum_object_revision').on(table.museumId, table.objectId, table.revisionNumber),
   index('idx_labels_museum_object_revision').on(table.museumId, table.objectId, table.revisionNumber),
+]);
+
+export const assets = sqliteTable('assets', {
+  id: text('id').notNull(), museumId: text('museum_id').notNull(), objectId: text('object_id'), submissionId: text('submission_id'), evidenceId: text('evidence_id'),
+  kind: text('kind').notNull(), contentType: text('content_type').notNull(), storageKey: text('storage_key').notNull(), fileName: text('file_name').notNull(),
+  altText: text('alt_text').notNull().default(''), caption: text('caption').notNull().default(''),
+  visibility: text('visibility').notNull().default('restricted'), consent: text('consent').notNull().default('private'),
+  byteSize: integer('byte_size').notNull(), width: integer('width'), height: integer('height'), sortOrder: integer('sort_order').notNull().default(0),
+  uploadedBy: text('uploaded_by').notNull(), createdAt: integer('created_at').notNull(), updatedAt: integer('updated_at').notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.museumId, table.id] }),
+  index('idx_assets_museum_object').on(table.museumId, table.objectId, table.sortOrder),
+  index('idx_assets_museum_submission').on(table.museumId, table.submissionId),
+  check('assets_kind_check', sql`${table.kind} IN ('image','document','audio')`),
+  check('assets_visibility_check', sql`${table.visibility} IN ('public','restricted','sealed')`),
+  check('assets_consent_check', sql`${table.consent} IN ('private','public_anonymous','public_attributed')`),
 ]);

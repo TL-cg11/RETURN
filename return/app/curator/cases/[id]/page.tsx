@@ -1,9 +1,33 @@
 import { NavLink as Link } from '@/components/shared/nav-link';
 import { notFound } from 'next/navigation';
-import { getSubmission } from '@/db/queries';
+import { getSubmission, listSubmissionAssets } from '@/db/queries';
+import { AssetPublishActions } from '@/components/curator/asset-publish-actions';
 import { EvidenceDeskActions } from '@/components/curator/evidence-desk-actions';
+import { SourceMatrix, sourceFromEvidence, type MatrixSource } from '@/components/curator/source-matrix';
+import { CONTRIBUTION_KINDS, fieldsFor, summariseDetail, type ContributionKind, type KindDetail } from '@/lib/community/contribution';
 import { evidenceFor, objectRecord } from '@/lib/records';
 import { relativeTime, sessionFromCookies } from '@/lib/session';
+
+/** Keeps only declared kinds and fields, so stored text cannot introduce a new row. */
+function parseDetails(raw: string): KindDetail[] {
+  try {
+    const parsed: unknown = JSON.parse(raw || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((entry) => {
+      const item = entry as { kind?: string; values?: Record<string, string> };
+      const kind = CONTRIBUTION_KINDS.find((name) => name === item.kind);
+      if (!kind) return [];
+      const values: Record<string, string> = {};
+      for (const field of fieldsFor(kind)) {
+        const value = item.values?.[field.name];
+        if (typeof value === 'string' && value.trim()) values[field.name] = value;
+      }
+      return [{ kind: kind as ContributionKind, values }];
+    });
+  } catch {
+    return [];
+  }
+}
 
 export const dynamic = 'force-dynamic';
 
@@ -13,13 +37,27 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
   const submission = await getSubmission(museumId, id);
   if (!submission) notFound();
 
-  const [record, evidence] = await Promise.all([
+  const [record, evidence, assets] = await Promise.all([
     objectRecord(museumId, submission.object_id, 'curator'),
     evidenceFor(museumId, submission.object_id, 'curator'),
+    listSubmissionAssets(museumId, submission.id),
   ]);
+  const details = parseDetails(submission.details);
   const verified = evidence.filter((item) => item.authority === 'verified');
   const counterpart = verified[0];
-  const restricted = submission.consent === 'research_only' || submission.consent === 'private';
+  // FR-K3 — the paired layout below holds for two sources and breaks for three.
+  const matrixSources: MatrixSource[] = [
+    {
+      id: submission.id, label: submission.title, authority: 'submitted', consent: submission.consent,
+      date: details.flatMap((detail) => [detail.values.taken_when, detail.values.issued_when, detail.values.recorded_when]).find(Boolean) ?? '—',
+      place: details.flatMap((detail) => [detail.values.taken_where, detail.values.recorded_where]).find(Boolean) ?? '—',
+      origin: submission.source || '—',
+      note: submission.requested_outcome || '—',
+    },
+    ...verified.map(sourceFromEvidence),
+  ];
+  const manySources = matrixSources.length > 2;
+  const restricted = submission.consent === 'private';
 
   return (
     <main className="case-page">
@@ -42,11 +80,17 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
       <div className="case-workspace">
         <section className="comparison">
           <header>
-            <div><p className="console-eyebrow">Source comparison</p><h2>{counterpart ? 'Two records, one unresolved period.' : 'One submitted source, no verified counterpart.'}</h2></div>
-            <span className="comparison-count">{counterpart ? 2 : 1} {counterpart ? 'sources' : 'source'}</span>
+            <div><p className="console-eyebrow">Source comparison</p><h2>{manySources
+              ? `${matrixSources.length} records to weigh against each other.`
+              : counterpart ? 'Two records, one unresolved period.' : 'One submitted source, no verified counterpart.'}</h2></div>
+            <span className="comparison-count">{matrixSources.length} {matrixSources.length === 1 ? 'source' : 'sources'}</span>
           </header>
 
-          <div className={counterpart ? 'evidence-bridge' : 'evidence-bridge single'}>
+          {manySources && <SourceMatrix sources={matrixSources} gap={record?.gap ?? null} />}
+
+          {/* Kept for one or two sources: the paired records with the unresolved period
+              between them are the clearest statement of what this record is missing. */}
+          <div className={`${counterpart ? 'evidence-bridge' : 'evidence-bridge single'}${manySources ? ' is-secondary' : ''}`}>
             <article className="evidence-card community">
               <div className="evidence-preview photo"><span>{submission.kind}</span><i /></div>
               <div className="evidence-card-head"><span className="submitted-badge">Submitted</span><small>{submission.id}</small></div>
@@ -57,7 +101,35 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
                 <div><dt>Consent</dt><dd>{submission.consent.replaceAll('_', ' ')}</dd></div>
                 <div><dt>Received</dt><dd>{relativeTime(submission.created_at)}</dd></div>
               </dl>
-              {submission.description && <blockquote>{submission.description}<cite>As submitted</cite></blockquote>}
+              {details.length > 0 ? (
+                <div className="submitted-detail">
+                  {details.map((detail) => (
+                    <section key={detail.kind}>
+                      <h4>{detail.kind}</h4>
+                      <ul>{summariseDetail(detail).map((line) => <li key={line}>{line}</li>)}</ul>
+                    </section>
+                  ))}
+                </div>
+              ) : submission.description && <blockquote>{submission.description}<cite>As submitted</cite></blockquote>}
+              {assets.length > 0 && (
+                <div className="case-attachments">
+                  <h4>Attached files · {assets.length}</h4>
+                  <ul>
+                    {assets.map((asset) => (
+                      <li key={asset.id}>
+                        {asset.kind === 'image'
+                          /* eslint-disable-next-line @next/next/no-img-element -- the asset route streams from R2 and is not a static import */
+                          ? <img src={`/api/assets/${asset.id}`} alt={asset.alt_text || asset.file_name} />
+                          : <span className="file-mark" aria-hidden="true">{asset.kind === 'audio' ? '◉' : '≡'}</span>}
+                        <a href={`/api/assets/${asset.id}`}>{asset.file_name}</a>
+                        <small>{asset.visibility} · {asset.consent.replaceAll('_', ' ')}</small>
+                      </li>
+                    ))}
+                  </ul>
+                  <AssetPublishActions assets={assets.map(({ id, file_name, kind, visibility, consent, alt_text }) => ({ id, file_name, kind, visibility, consent, alt_text }))} />
+                  <p className="restriction-note">Publishing a file puts it on the public record. Consent decides whether that is possible at all.</p>
+                </div>
+              )}
               {restricted && <p className="restriction-note">Internal review only — this material may not be quoted in public output.</p>}
             </article>
 

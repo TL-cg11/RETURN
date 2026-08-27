@@ -226,7 +226,6 @@ Authority와 공개 동의는 별개다.
 ```ts
 type Consent =
   | "private"
-  | "research_only"
   | "public_anonymous"
   | "public_attributed";
 ```
@@ -234,7 +233,6 @@ type Consent =
 | Consent | 내부 검토 | 공개 라벨 인용 | 공개 자산 표시 |
 |---|---:|---:|---:|
 | `private` | 가능 | 불가 | 불가 |
-| `research_only` | 가능 | 직접 인용 불가 | 불가 |
 | `public_anonymous` | 가능 | 익명·요약 인용 가능 | 조건부 |
 | `public_attributed` | 가능 | 출처 명시 인용 가능 | 조건부 |
 
@@ -321,6 +319,8 @@ type AssertionMode =
 - 제출자에게 추가 질문 전송
 - preliminary review case 생성
 - 제출 상태 변경
+- `publish_asset` — 기여된 자산을 공개 기록에 올리거나 내린다. 인간 큐레이터만 가능하고,
+  `consent`가 `private`이면 게이트웨이가 거부한다 (FR-M1)
 
 ### 6.3 HIGH
 
@@ -334,6 +334,8 @@ type AssertionMode =
 - 이미지 공개 상태 변경 제안
 
 HIGH 작업은 agent가 직접 실행하지 않는다. 검증된 근거가 있어도 approval queue에 들어간다.
+- `register_object` — 새 유물 등록. 공식 기록을 만드는 행위이므로 에이전트는 제안만 하고,
+  인간 큐레이터가 만든다. 커뮤니티는 어떤 경우에도 불가하다 (FR-X3)
 
 ### 6.4 CRITICAL
 
@@ -463,7 +465,7 @@ CRITICAL 행동은 큐레이터가 UI에서 수행할 수 있는 것도 있고, 
   source_relationship?: string;
   date_or_period?: string;
   place?: string;
-  consent: "private" | "research_only" | "public_anonymous" | "public_attributed";
+  consent: "private" | "public_anonymous" | "public_attributed";
 }
 ```
 
@@ -720,7 +722,7 @@ WebMCP annotation에 `untrustedContentHint`를 사용한다.
 
 - `refs`가 비어 있으면 거부
 - 모든 refs가 `submitted`면 거부하고 curator escalation 생성
-- `private` 또는 `research_only` 자료의 직접 인용이 포함되면 거부
+- `private` 자료의 직접 인용이 포함되면 거부
 - `verified_fact` assertion이 submitted ref에만 의존하면 거부
 - 검증 근거가 있어도 HIGH이므로 approval queue
 - 승인 시 draft snapshot hash와 현재 draft hash를 다시 비교
@@ -1236,39 +1238,59 @@ New evidence          3
 Open questions        2
 ```
 
+컬렉션 목록은 **페이지 단위**로 보여준다 (FR-M4). 서버 렌더 `?page=` 링크이며,
+인박스 필터·활동 로그와 같은 방식이라 클라이언트 상태가 없다. FR-K5로 유물이 늘어나면
+필수가 된다.
+
 ### 14.3 Object detail `/objects/[id]`
 
-주요 영역:
+구성:
 
-1. 큰 유물 이미지
-2. 현재 공식 라벨
-3. `Flip the label` 인터랙션
-4. provenance timeline
-5. open questions
-6. community contributions
-7. submit evidence CTA
+- **사진 캐러셀** (FR-M1) — 하단 점으로 장수, 좌우 화살표로 이동. 사진이 없으면 기존의
+  그려진 대체 이미지를 그대로 쓴다
+- **비율 유지** (FR-M2) — `object-fit: contain`. `cover`가 아니다. 프레임을 채우려고
+  잘라낸 유물 사진은 기록의 일부를 지운 것이다. 여백이 그 정직함의 대가다
+- **돋보기** (FR-M3) — 사진 아래 우측 버튼으로 켜고, 켜진 상태에서만 포인터를 따라
+  렌즈가 확대한다. 묻지도 않고 따라다니는 렌즈는 페이지를 읽기 어렵게 만든다
+- 공식 라벨 flip (앞: 현재 서술 / 뒤: 열린 질문)
+- provenance 연표와 gap
+- **커뮤니티 기여 섹션** (FR-O2) — 기관 기록 *옆에* 두고 절대 섞지 않는다.
+  `submitted` 배지, consent가 허용하는 자료만, `public_attributed`만 이름을 표기한다.
+  private 자료는 SQL에서 제외해 렌더링 실수로도 새지 않는다. 목록은 최근 8건으로 제한하고
+  전체 개수를 함께 밝힌다
+- 기여 진입점
 
-라벨 앞면:
-
-> What the museum currently says
-
-라벨 뒷면:
-
-> What the record is still asking
-
+자산의 공개 여부는 큐레이터가 정한다. 업로드는 `restricted`로 도착하며, 케이스 화면의
+Publish/Withdraw가 그 행위다. 정책 게이트웨이의 `publish_asset`(MEDIUM)을 통과하고,
+consent가 `private`이면 큐레이터라도 공개할 수 없다.
 ### 14.4 Contribution flow
 
-단계:
+**단계 수는 고정이 아니다.** 고른 자료 종류만큼 입력 단계가 생긴다 (FR-C3).
 
-1. 유물 선택
-2. 자료 종류 선택
-3. 자료 설명과 출처
-4. 관련 날짜·장소
-5. consent 선택
-6. requested outcome 선택
-7. 제출 전 요약
+1. 유물 선택 — **`/objects/[id]`에서 들어오면 생략한다** (FR-C2). 직접 `/contribute`로 온 경우에만 나타나며, 컬렉션이 커져도 감당되도록 검색 필드를 함께 둔다
+2. 자료 종류 선택 — **복수 선택** + 제목·출처
+3. …선택한 종류마다 한 단계씩. 종류별로 묻는 것이 다르다 (FR-C1)
+4. consent 선택 + requested outcome
+5. 제출 전 요약 — 종류·첨부·입력값을 그대로 되비춘다 (FR-C5)
+
+종류별 입력 항목:
+
+| 종류 | 묻는 것 |
+|---|---|
+| Photograph | 이미지 첨부(복수) · 무엇이 보이는가 · 촬영 시기·장소 · 촬영자 · 뒷면 기재 |
+| Document | 파일 첨부 · 문서 종류 · 발행처 · 발행 시기 · 요지 |
+| Oral history | 녹음 첨부(선택) · 전사/요약 · 화자와 관계 · 녹음 시기·장소 · 언어 |
+| Object information | 자유 서술 · 근거 유형 |
+
+필드 선언은 `lib/community/contribution.ts` 한 곳에 있고, 폼·리뷰·검증·큐레이터 화면이
+모두 거기서 읽는다. 한쪽에만 있는 필드가 생길 수 없다.
 
 Consent 문구는 쉬운 언어로 설명한다.
+
+제출 후 기여자 화면은 **기록의 현재 상태**를 함께 보여준다 (FR-C6) — 연결된 유물의
+공개 라벨과 개정 번호, 기여 도착 이후 개정되었는지, 각 문장의 assertion mode, 그리고
+첨부 파일이 큐레이터가 공개하기 전까지 비공개로 유지된다는 사실. 한 기여와 한 문장을
+잇는 관계는 모델에 없으므로, 저자성을 주장하지 않고 현재 상태만 사실대로 제시한다.
 
 ### 14.5 Curator dashboard `/curator`
 
@@ -1377,13 +1399,15 @@ System            published revision 4
 
 ### 15.1 파일 저장
 
-MVP에서는 실제 임의 파일 업로드를 최소화한다.
+FR-D1에서 실제 업로드를 범위 안으로 들였다. 원칙은 그대로다 — **도구는 바이너리를 받지 않는다.**
 
-- seed asset을 public/static storage에 포함
-- contribution form은 준비된 demo asset 또는 작은 이미지 업로드 지원
-- 업로드 자산은 `Asset` record로 먼저 생성
-- WebMCP tool은 raw binary 대신 `asset_ids`를 받음
-- 파일 type, size, visibility를 서버에서 검증
+- 바이트는 **Cloudflare R2**에 저장하고, 키는 `{museum_id}/{asset_id}.{ext}` 형태다
+- 업로드 전용 라우트(`POST /api/assets`)가 `assets` record를 먼저 생성한다
+- WebMCP tool은 raw binary 대신 `asset_ids`를 받는다
+- 파일 type·size·개수를 서버에서 검증한다. 허용 목록 방식이며 `image/svg+xml`은 제외한다
+- 자산은 `restricted` · `private`로 생성된다. 업로더 자신도 다시 읽을 수 없고, 공개는 큐레이터의 행위다
+- 제공 경로(`GET /api/assets/[id]`)가 tenancy → visibility → consent 순으로 판정한다.
+  `sealed`와 타 워크스페이스는 403이 아니라 **404**로 답해 존재 자체를 숨긴다
 
 ### 15.2 Realtime
 
@@ -1668,7 +1692,6 @@ Activity feed를 보여준다.
 #### Consent
 
 - private evidence 공개 label 인용
-- research_only 직접 인용
 - public_anonymous에 실명 포함
 - public_attributed 정상 인용
 - consent 변경 후 기존 approval 실행
@@ -1840,10 +1863,12 @@ Deliverable: demo quality.
 - Curator inbox
 - Evidence comparison
 - Label draft
-- 18 role-scoped WebMCP tools
+- 22 role-scoped WebMCP tools (Community 7 · Curator 13 · Shared 2; a curator session registers 15)
 - server-side policy gateway
 - submitted/verified authority binding
-- consent·visibility enforcement
+- consent·visibility enforcement (evidence 와 asset 양쪽에)
+- asset 업로드·제공 파이프라인 (FR-D1·FR-D2)
+- 큐레이터의 새 유물 등록 (FR-K5)
 - four risk grades
 - approval drawer
 - approve_with_edit

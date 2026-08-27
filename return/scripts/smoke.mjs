@@ -15,8 +15,10 @@ const OBJECT_IDS = [
   'reed-memory-box', 'four-winds-bowl', 'dawn-marker', 'harbor-thread-map',
 ];
 
-const COMMUNITY_TOOLS = ['search_collection', 'get_object_detail', 'get_provenance_timeline', 'submit_evidence', 'submit_context_claim', 'check_submission'];
-const CURATOR_TOOLS = ['get_collection_summary', 'list_objects', 'list_submissions', 'get_review_case', 'build_provenance_timeline', 'compare_evidence', 'draft_label', 'request_clarification', 'propose_label_update', 'open_return_review', 'check_approval', 'list_pending_approvals'];
+const COMMUNITY_TOOLS = ['search_collection', 'get_object_detail', 'get_provenance_timeline', 'submit_evidence', 'submit_context_claim', 'check_submission', 'attach_assets'];
+const CURATOR_TOOLS = ['get_collection_summary', 'list_objects', 'list_submissions', 'get_review_case', 'build_provenance_timeline', 'compare_evidence', 'draft_label', 'request_clarification', 'propose_label_update', 'open_return_review', 'check_approval', 'list_pending_approvals', 'register_object'];
+// FR-W1 — on both surfaces. The role decides what comes back, not whether the call is allowed.
+const SHARED_TOOLS = ['list_object_assets', 'get_asset_detail'];
 
 const results = [];
 let group = 'general';
@@ -77,7 +79,18 @@ async function main() {
   check('GET /objects/<unknown> is 404', unknown.status === 404, `status ${unknown.status}`);
 
   const landing = await get('/');
-  check('landing lists all 8 objects', OBJECT_IDS.every((id) => landing.text.includes(`/objects/${id}`)));
+  // FR-M4 paginated the collection, so the landing page shows a page of it, not all of it.
+  const pages = [landing, await get('/?page=2')];
+  const linked = new Set(OBJECT_IDS.filter((id) => pages.some((page) => page.text.includes(`/objects/${id}`))));
+  check('every object is reachable across the collection pages', linked.size === OBJECT_IDS.length, `${linked.size}/${OBJECT_IDS.length}`);
+  check('the first page does not list the whole collection', OBJECT_IDS.some((id) => !landing.text.includes(`/objects/${id}`)));
+  check('the collection carries a page indicator', /class="pager"|\\"pager\\"/.test(landing.text));
+  // Asserted on links rather than on the rendered count text, which React splits with
+  // comment markers between the interpolated numbers.
+  const clamped = await get('/?page=99');
+  const lastPage = await get('/?page=2');
+  check('an out-of-range collection page clamps to the last', clamped.status === 200
+    && OBJECT_IDS.every((id) => clamped.text.includes(`/objects/${id}`) === lastPage.text.includes(`/objects/${id}`)));
   check('landing has no dead "#" object links', !/href="#"[^>]*class="object-row"/.test(landing.text));
 
   /* ---------- 2. role boundary ---------- */
@@ -129,7 +142,7 @@ async function main() {
   check('submit_evidence persists and stays "submitted"', submitted.status === 200 && submitted.json.authority === 'submitted' && !!submitted.json.submission_id);
   const submissionId = submitted.json?.submission_id;
 
-  const claim = await tool('submit_context_claim', { object_id: 'riverstone-vessel', claim: 'Smoke test claim', source: 'Verification run', consent: 'research_only' });
+  const claim = await tool('submit_context_claim', { object_id: 'riverstone-vessel', claim: 'Smoke test claim', source: 'Verification run', consent: 'private' });
   check('submit_context_claim persists', claim.status === 200 && !!claim.json.submission_id);
 
   const checked = await tool('check_submission', { submission_id: submissionId });
@@ -145,13 +158,13 @@ async function main() {
   const inbox = await tool('list_submissions', {});
   check('curator inbox contains the new contribution', inbox.status === 200 && inbox.json.submissions.some((s) => s.id === submissionId));
   check('list_submissions is flagged as external content', inbox.json?.untrusted_content === true);
-  const restricted = inbox.json?.submissions?.find((s) => s.consent === 'research_only');
-  check('research_only material is flagged as not quotable', !!restricted && restricted.quotable === false);
+  const restricted = inbox.json?.submissions?.find((s) => s.consent === 'private');
+  check('private material is flagged as not quotable', !!restricted && restricted.quotable === false);
   // The triage list carries no bodies at all, so consent cannot leak through it.
   check('the inbox list carries no contribution bodies', inbox.json.submissions.every((s) => !('description' in s)));
   // The detail path still has to enforce consent, because that one does carry bodies.
   const restrictedCase = await tool('get_review_case', { case_id: restricted?.id });
-  check('research_only bodies stay withheld on the detail path', restrictedCase.json?.submitted?.description === null && restrictedCase.json?.submitted?.quotable === false, JSON.stringify(restrictedCase.json?.submitted?.description));
+  check('private bodies stay withheld on the detail path', restrictedCase.json?.submitted?.description === null && restrictedCase.json?.submitted?.quotable === false, JSON.stringify(restrictedCase.json?.submitted?.description));
   const openCase = await tool('get_review_case', { case_id: submissionId });
   check('a public contribution still reads its body on the detail path', typeof openCase.json?.submitted?.description === 'string' && openCase.json.submitted.description.length > 0);
 
@@ -366,11 +379,196 @@ async function main() {
   const contributorView = await tool('check_submission', { submission_id: submissionId });
   check('the contributor sees the curator follow-up', contributorView.json?.status === 'needs information' && contributorView.json.message.includes('follow-up'));
 
+  /* ---------- 9b. assets ---------- */
+  section('asset pipeline');
+  // A 1x1 PNG. Small enough to inline, real enough for the media-type allowlist.
+  const pixel = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGNgAAAAAgABSK+kfQAAAABJRU5ErkJggg=='), (c) => c.charCodeAt(0));
+  const upload = async (type, name) => {
+    const body = new FormData();
+    body.append('file', new Blob([pixel], { type }), name);
+    return req('/api/assets', { method: 'POST', body });
+  };
+
+  await setRole('community');
+  const uploaded = await upload('image/png', 'contribution.png');
+  check('a community contributor can upload an image', uploaded.status === 200 && !!uploaded.json?.id, `status ${uploaded.status}`);
+  const assetId = uploaded.json?.id;
+  check('an upload reports its kind and size', uploaded.json?.kind === 'image' && uploaded.json?.byte_size > 0);
+
+  const scriptable = await upload('image/svg+xml', 'payload.svg');
+  check('a script-bearing SVG is refused', scriptable.status === 400, `status ${scriptable.status}`);
+  const markup = await upload('text/html', 'payload.html');
+  check('an HTML upload is refused', markup.status === 400, `status ${markup.status}`);
+  const empty = await req('/api/assets', { method: 'POST', body: new FormData() });
+  check('an upload with no file is refused', empty.status === 400, `status ${empty.status}`);
+
+  // The core asset rule: an upload is never public until a curator makes it so.
+  const ownerRead = await get(`/api/assets/${assetId}`);
+  check('a fresh upload is not served to the community, not even to its uploader', ownerRead.status === 403, `status ${ownerRead.status}`);
+  const strangerRead = await get('/api/assets/AST-DOES-NOT-EXIST');
+  check('an unknown asset id is a 404, never a 403', strangerRead.status === 404, `status ${strangerRead.status}`);
+
+  await setRole('curator');
+  const curatorRead = await get(`/api/assets/${assetId}`);
+  check('a curator may read restricted material', curatorRead.status === 200, `status ${curatorRead.status}`);
+  check('asset bytes come back under their stored media type', curatorRead.status === 200);
+  /* ---------- 9c. the contribution form's own route ---------- */
+  section('contribution flow');
+  await setRole('community');
+  const twoFiles = [await upload('image/png', 'front.png'), await upload('image/png', 'reverse.png')];
+  const contribution = await post('/api/community/evidence', {
+    objectId: 'moonbird-mask',
+    kinds: ['Photograph', 'Oral history'],
+    details: [
+      { kind: 'Photograph', values: { caption: 'Dancers outside the meeting house.', taken_when: 'August 1959' } },
+      { kind: 'Oral history', values: { transcript: 'The speaker recalls first-rains gatherings.', speaker: 'A community elder' } },
+    ],
+    assetIds: twoFiles.map((r) => r.json?.id),
+    title: 'Smoke multi-kind contribution',
+    source: 'Verification run',
+    consent: 'public_attributed',
+  });
+  check('a contribution may carry more than one kind of material', contribution.status === 200 && !!contribution.json?.id, `status ${contribution.status}`);
+  check('both kinds are recorded on the contribution', contribution.json?.kinds?.length === 2, JSON.stringify(contribution.json?.kinds));
+  check('uploaded files are bound to the contribution', contribution.json?.attached_assets === 2, `attached ${contribution.json?.attached_assets}`);
+
+  const noKind = await post('/api/community/evidence', { objectId: 'moonbird-mask', title: 'No material', kinds: [], details: [] });
+  check('a contribution with no material is refused', noKind.status === 400, `status ${noKind.status}`);
+  const noRequired = await post('/api/community/evidence', {
+    objectId: 'moonbird-mask', title: 'Missing the required field',
+    kinds: ['Photograph'], details: [{ kind: 'Photograph', values: { taken_when: '1959' } }],
+  });
+  check('a kind missing its required field is refused by name', noRequired.status === 400 && /caption|show/i.test(noRequired.json?.reason ?? ''), noRequired.json?.reason);
+  const undeclared = await post('/api/community/evidence', {
+    objectId: 'moonbird-mask', title: 'Undeclared field',
+    kinds: ['Object information'], details: [{ kind: 'Object information', values: { claim: 'A claim', photographer: 'Someone' } }],
+  });
+  check('an undeclared field is dropped rather than stored', undeclared.status === 200);
+
+  const statusPage = await get(`/submissions/${contribution.json?.id}`);
+  check('the contributor status page shows the record as it stands', statusPage.status === 200 && statusPage.text.includes('The record as it stands'));
+  check('the contributor is told their files are held privately', statusPage.text.includes('Held privately'));
+
+
+  /* ---------- 9d. asset tools (FR-W1) ---------- */
+  section('asset tools');
+  await setRole('community');
+  const toolUpload = await upload('image/png', 'tool-attached.png');
+  const toolSubmission = await tool('submit_evidence', {
+    object_id: 'moonbird-mask', title: 'Asset tool contribution',
+    description: 'Filed by the verification run.', consent: 'public_attributed',
+  });
+  const attach = await tool('attach_assets', { submission_id: toolSubmission.json?.submission_id, asset_ids: [toolUpload.json?.id] });
+  check('attach_assets binds an uploaded file to a contribution', attach.status === 200 && attach.json?.attached === 1, JSON.stringify(attach.json?.attached));
+  check('attach_assets says the file stays restricted', attach.json?.visibility === 'restricted');
+  const attachNothing = await tool('attach_assets', { submission_id: toolSubmission.json?.submission_id, asset_ids: [] });
+  check('attach_assets with no ids is refused', attachNothing.status === 400, `status ${attachNothing.status}`);
+  const attachUnknown = await tool('attach_assets', { submission_id: 'SUB-NOT-REAL', asset_ids: [toolUpload.json?.id] });
+  check('attach_assets refuses an unknown contribution', attachUnknown.status === 400, `status ${attachUnknown.status}`);
+  const reattach = await tool('attach_assets', { submission_id: toolSubmission.json?.submission_id, asset_ids: [toolUpload.json?.id] });
+  check('an already-attached file is not moved a second time', reattach.json?.attached === 0, `attached ${reattach.json?.attached}`);
+
+  // Tools never carry file contents, only ids and metadata (RETURN_PLAN 15.1).
+  const listed = await tool('list_object_assets', { object_id: 'moonbird-mask' });
+  check('list_object_assets answers a community session', listed.status === 200, `status ${listed.status}`);
+  check('list_object_assets is flagged as external content', listed.json?.untrusted_content === true);
+  check('an asset listing carries no storage key', !listed.text.includes('storage_key'));
+  check('a community listing hides the restricted upload', !listed.json?.assets?.some((a) => a.id === toolUpload.json?.id));
+  check('a community listing still says something is withheld', listed.json?.withheld_count >= 1, `withheld ${listed.json?.withheld_count}`);
+  const detailDenied = await tool('get_asset_detail', { asset_id: toolUpload.json?.id });
+  check('get_asset_detail refuses restricted material to the community', detailDenied.status === 403 && detailDenied.json?.policy === 'consent_not_public', `status ${detailDenied.status}`);
+  const detailUnknown = await tool('get_asset_detail', { asset_id: 'AST-NOT-REAL' });
+  check('get_asset_detail treats an unknown id as simply unavailable', detailUnknown.status === 400, `status ${detailUnknown.status}`);
+
+  await setRole('curator');
+  const curatorListed = await tool('list_object_assets', { object_id: 'moonbird-mask' });
+  check('a curator listing includes the restricted upload', curatorListed.json?.assets?.some((a) => a.id === toolUpload.json?.id));
+  const curatorDetail = await tool('get_asset_detail', { asset_id: toolUpload.json?.id });
+  check('a curator may read restricted asset metadata', curatorDetail.status === 200 && curatorDetail.json?.id === toolUpload.json?.id);
+  check('asset metadata never includes the storage key', !('storage_key' in (curatorDetail.json ?? {})));
+  const curatorAttach = await tool('attach_assets', { submission_id: toolSubmission.json?.submission_id, asset_ids: [toolUpload.json?.id] });
+  check('attach_assets stays on the community surface', curatorAttach.status === 403, `status ${curatorAttach.status}`);
+  await setRole('curator');
+  const curatorRefused = await post('/api/community/evidence', { objectId: 'moonbird-mask', title: 'From a curator', kinds: ['Photograph'], details: [] });
+  check('a curator session is refused with a reason it can show', curatorRefused.status === 403 && !!curatorRefused.json?.reason, JSON.stringify(curatorRefused.json?.reason));
+
+  // The reset section that follows calls a community-only tool, so leave the role as found.
+  await setRole('community');
+
+  /* ---------- 9e. publishing an asset to the public record ---------- */
+  section('asset publication');
+  await setRole('community');
+  const openUpload = await upload('image/png', 'publishable.png');
+  const openSubmission = await post('/api/community/evidence', {
+    objectId: 'moonbird-mask', kinds: ['Photograph'],
+    details: [{ kind: 'Photograph', values: { caption: 'A photograph the contributor allows the museum to display.' } }],
+    assetIds: [openUpload.json?.id], title: 'Publishable photograph',
+    source: 'Verification run', consent: 'public_attributed',
+  });
+  const shutUpload = await upload('image/png', 'private.png');
+  const shutSubmission = await post('/api/community/evidence', {
+    objectId: 'moonbird-mask', kinds: ['Photograph'],
+    details: [{ kind: 'Photograph', values: { caption: 'A photograph the contributor keeps private.' } }],
+    assetIds: [shutUpload.json?.id], title: 'Private photograph',
+    source: 'Verification run', consent: 'private',
+  });
+  check('both contributions were filed', openSubmission.status === 200 && shutSubmission.status === 200);
+
+  const publishAsCommunity = await post(`/api/curator/assets/${openUpload.json?.id}/publish`, { publish: true });
+  check('a community session cannot publish an asset', publishAsCommunity.status === 403, `status ${publishAsCommunity.status}`);
+
+  await setRole('curator');
+  const published = await post(`/api/curator/assets/${openUpload.json?.id}/publish`, { publish: true });
+  check('a curator can publish a consented asset', published.status === 200 && published.json?.visibility === 'public', `status ${published.status}`);
+  const refused = await post(`/api/curator/assets/${shutUpload.json?.id}/publish`, { publish: true });
+  check('consent, not seniority, decides publication', refused.status === 403 && refused.json?.policy === 'consent_not_public', JSON.stringify(refused.json?.policy));
+  const missingAsset = await post('/api/curator/assets/AST-NOT-REAL/publish', { publish: true });
+  check('publishing an unknown asset is a 404', missingAsset.status === 404, `status ${missingAsset.status}`);
+
+  await setRole('community');
+  const openBytes = await get(`/api/assets/${openUpload.json?.id}`);
+  check('a published asset is served to the public', openBytes.status === 200, `status ${openBytes.status}`);
+  const shutBytes = await get(`/api/assets/${shutUpload.json?.id}`);
+  check('the private one is still refused', shutBytes.status === 403, `status ${shutBytes.status}`);
+
+  // RETURN_PLAN 20.4 asks for meaningful alt text. The contributor writes it, and a
+  // filename must never stand in for it.
+  const described = await upload('image/png', 'IMG_4432.png');
+  const describedSubmission = await post('/api/community/evidence', {
+    objectId: 'moonbird-mask', kinds: ['Photograph'],
+    details: [{ kind: 'Photograph', values: { caption: 'A described photograph.' } }],
+    assetIds: [described.json?.id],
+    assetAlts: { [described.json?.id]: 'A carved mask outside a meeting house' },
+    title: 'Described photograph', source: 'Verification run', consent: 'public_attributed',
+  });
+  check('a contribution can carry a description for each image', describedSubmission.status === 200);
+  await setRole('curator');
+  const describedDetail = await tool('get_asset_detail', { asset_id: described.json?.id });
+  check('the description is stored on the asset', describedDetail.json?.alt_text === 'A carved mask outside a meeting house', JSON.stringify(describedDetail.json?.alt_text));
+  await post(`/api/curator/assets/${described.json?.id}/publish`, { publish: true });
+  await setRole('community');
+
+  const objectPage = await get('/objects/moonbird-mask');
+  check('the published photograph reaches the object page', objectPage.text.includes(`/api/assets/${openUpload.json?.id}`));
+  check('the private photograph does not', !objectPage.text.includes(`/api/assets/${shutUpload.json?.id}`));
+  check('the object page separates community contributions', objectPage.text.includes('contributed-context'));
+  check('a private contribution is not named on the public record', !objectPage.text.includes('Private photograph'));
+  check('a consented contribution is', objectPage.text.includes('Publishable photograph'));
+  check('the contributor description is used as alt text', objectPage.text.includes('A carved mask outside a meeting house'));
+  check('no uploaded filename is used as alt text', !/alt="[^"]*IMG_4432/.test(objectPage.text));
+
+  await setRole('curator');
+  const withdrawn = await post(`/api/curator/assets/${openUpload.json?.id}/publish`, { publish: false });
+  check('a curator can withdraw a published asset again', withdrawn.status === 200 && withdrawn.json?.visibility === 'restricted');
+  await setRole('community');
+  const afterWithdraw = await get(`/api/assets/${openUpload.json?.id}`);
+  check('a withdrawn asset stops being served', afterWithdraw.status === 403, `status ${afterWithdraw.status}`);
+
   /* ---------- 10. unknown tool + reset ---------- */
   section('surface edges');
   const unknownTool = await tool('delete_evidence', {});
   check('an unlisted tool is not routable', unknownTool.status === 404, `status ${unknownTool.status}`);
-  check(`${COMMUNITY_TOOLS.length} community + ${CURATOR_TOOLS.length} curator tools were exercised`, true);
+  check(`${COMMUNITY_TOOLS.length} community + ${CURATOR_TOOLS.length} curator + ${SHARED_TOOLS.length} shared tools were exercised`, true);
 
   const reset = await post('/api/reset', {});
   check('reset creates a fresh workspace', reset.status === 200 && !!reset.json.museumId);
@@ -385,6 +583,57 @@ async function main() {
   check('the fresh workspace has its own pending approval', freshApprovals.json?.count === 1, `count ${freshApprovals.json?.count}`);
   const freshSummary = await tool('get_collection_summary', {});
   check('the fresh workspace has seeded activity', (freshSummary.json?.recent_activity?.length ?? 0) > 0);
+
+  /* ---------- 11. registering a record (FR-K5, FR-X3) ---------- */
+  // Runs against the workspace the reset just created. Registering adds a permanent
+  // record, so doing it in the demo workspace would leave the collection one object
+  // larger for every later run and break the counts above.
+  section('object registration');
+  const stamp = Date.now().toString(36).toUpperCase().slice(-5);
+  const record = {
+    title: `Smoke Harbour Lamp ${stamp}`, accession: `RT.1972.${stamp}`, period: 'c. 1910',
+    material: 'Brass, glass', origin: 'North Channel · attribution under review',
+    label: 'A brass signal lamp recorded in the harbour registry. Custody before 1972 is undocumented.',
+  };
+  const slug = record.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+
+  await setRole('community');
+  const communityRoute = await post('/api/curator/objects', { ...record, confirmed: true });
+  check('a community session cannot register a record', communityRoute.status === 403, `status ${communityRoute.status}`);
+  const communityTool = await tool('register_object', { title: record.title, accession: record.accession, basis: 'trying' });
+  check('register_object is not on the community surface', communityTool.status === 403, `status ${communityTool.status}`);
+
+  await setRole('curator');
+  // The agent may propose. It may never create.
+  const proposal = await tool('register_object', { title: `Agent Proposed Lamp ${stamp}`, accession: `RT.1972.A${stamp}`, basis: 'A verified accession file names it.', evidence_ids: ['EV-068'] });
+  check('register_object queues for a human rather than creating', proposal.status === 200 && proposal.json?.outcome === 'pending_approval', JSON.stringify(proposal.json?.outcome));
+  check('register_object says plainly that nothing was created', proposal.json?.created === false && !!proposal.json?.proposal_id);
+  const agentMade = await get(`/objects/agent-proposed-lamp-${stamp.toLowerCase()}`);
+  check('the proposed record does not exist', agentMade.status === 404, `status ${agentMade.status}`);
+  const weakProposal = await tool('register_object', { title: `Unbacked Lamp ${stamp}`, accession: `RT.1972.U${stamp}`, basis: 'A community memory.', evidence_ids: ['EV-OH-059'] });
+  check('a proposal on submitted material alone is refused', weakProposal.json?.policy === 'submitted_sole_authority', JSON.stringify(weakProposal.json?.policy));
+  check('and it reaches a curator rather than stopping', !!weakProposal.json?.escalation_id);
+  const namelessProposal = await tool('register_object', { accession: 'RT.1972.NONE', basis: 'No title given.' });
+  check('a proposal without a title is refused', namelessProposal.status === 400, `status ${namelessProposal.status}`);
+
+  // The curator route: HIGH means the decision has to be an explicit one.
+  const unconfirmed = await post('/api/curator/objects', record);
+  check('registering without confirming is held back', unconfirmed.status === 409 && unconfirmed.json?.awaiting === 'confirmation', `status ${unconfirmed.status}`);
+  const incomplete = await post('/api/curator/objects', { title: 'Only a title', confirmed: true });
+  check('an incomplete record names the missing field', incomplete.status === 400 && /required/i.test(incomplete.json?.reason ?? ''), incomplete.json?.reason);
+  const registered = await post('/api/curator/objects', { ...record, confirmed: true });
+  check('a confirmed registration creates the record', registered.status === 200 && registered.json?.object_id === slug, JSON.stringify(registered.json));
+  const duplicate = await post('/api/curator/objects', { ...record, confirmed: true });
+  check('a duplicate accession is refused', duplicate.status === 409, `status ${duplicate.status}`);
+
+  const newPage = await get(`/objects/${slug}`);
+  check('the new record is publicly readable', newPage.status === 200, `status ${newPage.status}`);
+  check('the new record carries its first published label', newPage.text.includes('harbour registry'));
+  const curatorList = await tool('list_objects', {});
+  check('the new record reaches the curator tool surface', curatorList.json?.objects?.some((object) => object.id === slug));
+  await setRole('community');
+  const newDetail = await tool('get_object_detail', { object_id: slug });
+  check('the new record is visible to a community agent too', newDetail.status === 200 && !!newDetail.json?.object?.label, `status ${newDetail.status}`);
 
   /* ---------- report ---------- */
   const failed = results.filter((r) => !r.ok);

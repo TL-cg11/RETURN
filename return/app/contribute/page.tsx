@@ -10,7 +10,8 @@ export default async function ContributePage({ searchParams }: { searchParams: P
   const { object } = await searchParams;
   const { museumId } = await sessionFromCookies();
   const collection = await collectionFor(museumId);
-  const selected = collection.find((item) => item.id === object)
+  const arrived = collection.find((item) => item.id === object);
+  const selected = arrived
     ?? collection.find((item) => item.id === 'moonbird-mask')
     ?? collection[0];
   if (!selected) return null;
@@ -23,7 +24,9 @@ export default async function ContributePage({ searchParams }: { searchParams: P
         <span>/</span>
         <span>Add to the record</span>
       </div>
-      <ContributionForm objectId={selected.id} objects={collection} />
+      {/* FR-C2: arriving from a record settles which object this is about, so the
+          picker step is dropped. A bare /contribute still has to ask. */}
+      <ContributionForm objectId={selected.id} objects={collection} fromObject={!!arrived} />
     </main>
   );
 }

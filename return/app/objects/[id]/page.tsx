@@ -1,9 +1,37 @@
 import { NavLink as Link } from '@/components/shared/nav-link';
 import { notFound } from 'next/navigation';
 import { LabelFlip } from '@/components/community/label-flip';
+import { ObjectGallery, type GalleryImage } from '@/components/community/object-gallery';
 import { CommunityHeader } from '@/components/shared/community-header';
+import { listObjectAssets, listPublicContributions } from '@/db/queries';
+import { assetAccess } from '@/lib/assets/access';
+import { CONTRIBUTION_KINDS, fieldsFor, summariseDetail, type ContributionKind, type KindDetail } from '@/lib/community/contribution';
+import type { Consent, Visibility } from '@/lib/domain/types';
 import { objectRecord } from '@/lib/records';
 import { sessionFromCookies } from '@/lib/session';
+
+/** Reads stored contribution detail, keeping only declared kinds and fields. */
+function parseDetails(raw: string): KindDetail[] {
+  try {
+    const parsed: unknown = JSON.parse(raw || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((entry) => {
+      const item = entry as { kind?: string; values?: Record<string, string> };
+      const kind = CONTRIBUTION_KINDS.find((name) => name === item.kind);
+      if (!kind) return [];
+      const values: Record<string, string> = {};
+      for (const field of fieldsFor(kind)) {
+        const value = item.values?.[field.name];
+        if (typeof value === 'string' && value.trim()) values[field.name] = value;
+      }
+      return [{ kind: kind as ContributionKind, values }];
+    });
+  } catch {
+    return [];
+  }
+}
+
+const MAX_SHOWN_CONTRIBUTIONS = 8;
 
 export const dynamic = 'force-dynamic';
 
@@ -34,6 +62,25 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
   if (!record) notFound();
   const featured = record.id === 'moonbird-mask';
 
+  const [assetRows, allContributions] = await Promise.all([
+    listObjectAssets(museumId, record.id),
+    listPublicContributions(museumId, record.id),
+  ]);
+  // Bounded like every other list on the site. A public record page that grows without
+  // limit as contributions arrive is the same defect FR-B2 and FR-M4 fixed elsewhere.
+  const contributions = allContributions.slice(0, MAX_SHOWN_CONTRIBUTIONS);
+  // This page is public, so it is judged as a community session regardless of who is
+  // looking. A curator viewing the public record must see the public record.
+  const images: GalleryImage[] = assetRows
+    .filter((row) => row.kind === 'image')
+    .filter((row) => assetAccess({ museumId: row.museum_id, visibility: row.visibility as Visibility, consent: row.consent as Consent }, { role: 'community', museumId }) === 'serve')
+    // A filename is not a description, and an uploaded one can carry a person's name.
+    .map((row, index) => ({
+      id: row.id,
+      alt: row.alt_text || `${record.title}, contributed photograph ${index + 1}`,
+      caption: row.caption, url: `/api/assets/${row.id}`,
+    }));
+
   return (
     <main>
       <CommunityHeader />
@@ -42,12 +89,17 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
       <section className="object-hero">
         <div className="object-art-panel">
           <div className="object-art-meta"><span>{record.accession}</span><span>Fictional record</span></div>
-          <div className="artifact-stage detail">
-            {featured
-              ? <div className="mask-silhouette"><span className="mask-eye left" /><span className="mask-eye right" /><span className="mask-mouth" /></div>
-              : <span className={`object-thumbnail ${record.tone}`} aria-hidden="true"><i /></span>}
-          </div>
-          <p className="image-disclaimer">Fictional collection image · created for this demonstration</p>
+          {/* Photographs when the record has any, and the drawn stand-in when it does not. */}
+          <ObjectGallery images={images}>
+            <div className="artifact-stage detail">
+              {featured
+                ? <div className="mask-silhouette"><span className="mask-eye left" /><span className="mask-eye right" /><span className="mask-mouth" /></div>
+                : <span className={`object-thumbnail ${record.tone}`} aria-hidden="true"><i /></span>}
+            </div>
+          </ObjectGallery>
+          <p className="image-disclaimer">{images.length > 0
+            ? `${images.length} image${images.length === 1 ? '' : 's'} on this record · fictional collection material`
+            : 'Fictional collection image · created for this demonstration'}</p>
         </div>
 
         <div className="object-intro">
@@ -86,6 +138,51 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
             </article>
           ))}
         </div>
+      </section>
+
+      {/* FR-O2 — what the community added, marked as such and never merged into the
+          institutional record above. Only consent-permitting material reaches this list,
+          and only `public_attributed` carries a name. */}
+      <section className="contributed-context">
+        <div className="section-heading compact">
+          <div>
+            <p className="eyebrow">Community contributions</p>
+            <h2>{contributions.length > 0
+              ? 'What people have added to this record.'
+              : 'No community material is on this record yet.'}</h2>
+          </div>
+          <p className="context-note">These accounts are <strong>submitted</strong>, not verified. The museum has received them; it has not judged them true or false. They sit beside the official record above, never inside it.</p>
+        </div>
+        {allContributions.length > contributions.length && (
+          <p className="context-note bounded">Showing the {contributions.length} most recent of {allContributions.length} contributions on this record.</p>
+        )}
+        {contributions.length > 0 && (
+          <ul className="contributed-list">
+            {contributions.map((row) => {
+              const details = parseDetails(row.details);
+              return (
+                <li key={row.id}>
+                  <div className="contributed-head">
+                    <span className="submitted-badge">Submitted content</span>
+                    <strong>{row.title}</strong>
+                    <small>{row.kind} · {row.consent === 'public_attributed' && row.source ? row.source : 'Contributor chose not to be named'}</small>
+                  </div>
+                  {details.length > 0 ? (
+                    <div className="contributed-detail">
+                      {details.map((detail) => (
+                        <section key={detail.kind}>
+                          <h4>{detail.kind}</h4>
+                          <ul>{summariseDetail(detail).map((line) => <li key={line}>{line}</li>)}</ul>
+                        </section>
+                      ))}
+                    </div>
+                  ) : row.description && <p className="contributed-body">{row.description}</p>}
+                  <p className="contributed-status">Status · {row.status}</p>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </section>
 
       <section className="contribution-cta">

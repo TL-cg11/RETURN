@@ -1,4 +1,5 @@
 import { NavLink as Link } from '@/components/shared/nav-link';
+import { RegisterObject } from '@/components/curator/register-object';
 import { listSubmissions } from '@/db/queries';
 import { collectionFor } from '@/lib/records';
 import { relativeTime, sessionFromCookies } from '@/lib/session';
@@ -20,10 +21,11 @@ export default async function ObjectsPage() {
           <h1>Objects</h1>
           <p>Prioritise records with gaps, new context, and unresolved access questions.</p>
         </div>
+        <RegisterObject />
       </div>
 
       <div className="object-admin-list">
-        <div className="table-head"><span>Object</span><span>Record state</span><span>Provenance</span><span>Contributions</span><span /></div>
+        <div className="table-head"><span /><span>Object</span><span>Record state</span><span>Provenance</span><span>Contributions</span><span /></div>
         {collection.map((object) => {
           const attached = submissions.filter((row) => row.object_id === object.id);
           const latest = attached[0];

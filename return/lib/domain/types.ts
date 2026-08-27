@@ -1,5 +1,5 @@
 export type Authority = 'submitted' | 'verified';
-export type Consent = 'private' | 'research_only' | 'public_anonymous' | 'public_attributed';
+export type Consent = 'private' | 'public_anonymous' | 'public_attributed';
 export type Visibility = 'public' | 'restricted' | 'sealed';
 export type AssertionMode = 'verified_fact' | 'attributed_claim' | 'open_question';
 

@@ -101,7 +101,7 @@ approvals.args_snapshot.evidence_refs[]
 | `date_or_period` | TEXT | NOT NULL | 관련 날짜 또는 시기 |
 | `place` | TEXT | NOT NULL | 관련 장소 |
 | `authority` | TEXT | NOT NULL | `submitted` 또는 `verified` |
-| `consent` | TEXT | NOT NULL | `private`, `research_only`, `public_anonymous`, `public_attributed` |
+| `consent` | TEXT | NOT NULL | `private`, `public_anonymous`, `public_attributed` |
 | `visibility` | TEXT | NOT NULL, default `public` | `public`, `restricted`, `sealed` |
 | `submitted_by` | TEXT | NOT NULL | 제출자 |
 | `verified_by` | TEXT | NULL | 검토한 큐레이터 |
@@ -302,6 +302,44 @@ D1에서는 배열과 구조화 snapshot을 JSON 문자열로 저장한다.
 10. 만료되거나 이미 처리된 approval은 재사용하지 않는다.
 11. evidence 삭제와 실제 소장품 반환은 agent tool로 제공하지 않는다.
 12. 실제 반환 상태는 object에 저장하지 않고 인간 review 절차로만 다룬다.
+13. 자산은 `restricted` · `private` 로 생성되며, 큐레이터가 열기 전에는 어떤 경로로도 공개되지 않는다.
+14. `visibility` 가 `public` 이어도 `consent` 가 `private` 이면 자산은 공개 표시되지 않는다. 두 게이트는 독립이다.
+15. `sealed` 자산은 존재 자체를 숨긴다. 공개 경로는 403이 아니라 404로 답한다.
+16. 공개 유물 페이지는 `consent IN ('public_attributed','public_anonymous')` 인 기여만 조회한다. 렌더링이 아니라 SQL 에서 거른다.
+17. `public_anonymous` 기여는 본문은 공개하되 기여자 이름을 표기하지 않는다.
+18. 새 유물은 `objects` 와 revision 1 `label_publications` 를 한 트랜잭션으로 만든다. 라벨 없는 유물은 존재하지 않는다.
+19. `objects.id` 와 `accession_number` 는 워크스페이스 안에서 유일하다. 충돌하면 등록을 거부한다.
+
+### 5.1 `assets` — 기여·기록 자산
+
+바이트는 R2 에 `storage_key` 로 저장하고, 누가 읽을 수 있는지는 오직 이 행이 정한다.
+도구는 바이너리를 받지 않는다 (`RETURN_PLAN.md` §15.1). 업로드 전용 라우트가 먼저
+`assets` 행을 만들고, 도구는 `asset_ids` 만 수신한다.
+
+| 컬럼 | 타입 | 제약 | 설명 |
+|---|---|---|---|
+| `id` | TEXT | PK(museum_id,id) | `AST-` 접두 |
+| `museum_id` | TEXT | NOT NULL | 워크스페이스. `storage_key` 접두사에도 포함된다 |
+| `object_id` | TEXT | NULL 허용 | 유물에 직접 붙은 자산 |
+| `submission_id` | TEXT | NULL 허용 | 기여에 붙은 자산 |
+| `evidence_id` | TEXT | NULL 허용 | evidence 로 승격된 뒤의 연결 |
+| `kind` | TEXT | NOT NULL | `image`, `document`, `audio` |
+| `content_type` | TEXT | NOT NULL | 허용 목록으로 검증된 media type |
+| `storage_key` | TEXT | NOT NULL | R2 객체 키 |
+| `file_name` | TEXT | NOT NULL | 원본 파일명 |
+| `alt_text` | TEXT | NOT NULL, 기본 `''` | 접근성 대체 텍스트 |
+| `caption` | TEXT | NOT NULL, 기본 `''` | 표시용 설명 |
+| `visibility` | TEXT | NOT NULL, 기본 `restricted` | `public`, `restricted`, `sealed` |
+| `consent` | TEXT | NOT NULL, 기본 `private` | `private`, `public_anonymous`, `public_attributed` |
+| `byte_size` | INTEGER | NOT NULL | 상한 8 MB |
+| `width` / `height` | INTEGER | NULL 허용 | 알려진 경우의 원본 해상도 |
+| `sort_order` | INTEGER | NOT NULL, 기본 0 | 캐러셀 순서 |
+| `uploaded_by` | TEXT | NOT NULL | 업로드 주체 |
+
+허용 media type 은 `image/jpeg`, `image/png`, `image/webp`, `image/gif`,
+`application/pdf`, `audio/mpeg`, `audio/wav`, `audio/mp4` 뿐이다.
+`image/svg+xml` 은 의도적으로 제외한다 — 스크립트를 담는 마크업이고 자산은
+애플리케이션 origin 에서 제공되기 때문이다.
 
 ## 6. 마이그레이션 순서
 
@@ -310,6 +348,9 @@ D1에서는 배열과 구조화 snapshot을 JSON 문자열로 저장한다.
 | `0000_return_foundation.sql` | `museums`, `submissions`, `approvals`, `activity` 기초 생성 |
 | `0001_domain_records.sql` | `objects`, `evidence`, `provenance_events`, `label_publications` 생성 |
 | `0002_governance_audit.sql` | `escalations` 생성, submissions/approvals/activity 확장 및 기존 행 backfill |
+| `0003_consent_three_levels.sql` | `research_only` 를 `private` 으로 이관 (FR-X1) |
+| `0004_assets.sql` | `assets` 생성 — 기여·기록 자산 (FR-D1·FR-D2) |
+| `0005_contribution_detail.sql` | `submissions.details` · `submissions.asset_ids` 추가 — 종류별 입력과 첨부 (FR-C1·C3·C4) |
 
 Cloudflare D1에 수동 적용할 경우 반드시 번호 순서대로 한 번씩만 실행한다. 코드의 `ensureDatabase()`는 기존 개발·배포 DB에서 누락된 테이블과 컬럼을 보정하는 호환 경로이며, SQL 마이그레이션이 배포 스키마의 기준이다.
 
@@ -319,7 +360,6 @@ Cloudflare D1에 수동 적용할 경우 반드시 번호 순서대로 한 번�
 
 | 개념 | 현재 처리 |
 |---|---|
-| `Asset` | 임의 업로드가 MVP 제외이므로 생성하지 않음 |
 | `Claim` | `submissions.kind = 'Context claim'`으로 표현 |
 | `LabelDraft` | 승인 전 draft와 snapshot 흐름으로 임시 처리 |
 | `ReviewCase` | submission ID를 case ID로 사용 |

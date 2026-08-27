@@ -5,12 +5,22 @@ import { sessionFromCookies } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
-export default async function Home() {
+// FR-M4 — the collection was rendered whole. Eight objects fit on one screen; a real
+// collection does not, and FR-K5 lets a curator add to it. Server-rendered `?page=`
+// links, matching the inbox filter and the activity log, so there is no client state.
+const PER_PAGE = 6;
+
+export default async function Home({ searchParams }: { searchParams: Promise<{ page?: string }> }) {
+  const { page } = await searchParams;
   const { museumId } = await sessionFromCookies();
   const collection = await collectionFor(museumId);
   const moonbird = collection.find((object) => object.id === 'moonbird-mask') ?? collection[0];
   if (!moonbird) return null;
   const gaps = collection.filter((object) => object.gap).length;
+  const pageCount = Math.max(1, Math.ceil(collection.length / PER_PAGE));
+  const current = Math.min(Math.max(1, Number(page) || 1), pageCount);
+  const start = (current - 1) * PER_PAGE;
+  const shown = collection.slice(start, start + PER_PAGE);
 
   return (
     <main>
@@ -52,9 +62,9 @@ export default async function Home() {
           <p>Each record shows what is known, what is attributed, and what remains an open question.</p>
         </div>
         <div className="object-list">
-          {collection.map((object, index) => (
+          {shown.map((object, index) => (
             <Link className="object-row" href={`/objects/${object.id}`} key={object.id}>
-              <span className="object-number">{String(index + 1).padStart(2, '0')}</span>
+              <span className="object-number">{String(start + index + 1).padStart(2, '0')}</span>
               <span className={`object-thumbnail ${object.tone}`} aria-hidden="true"><i /></span>
               <span className="object-name"><strong>{object.title}</strong><small>{object.date}</small></span>
               <span className="object-note">{object.gap ? `Unrecorded ${object.gap}` : object.status}</span>
@@ -62,6 +72,19 @@ export default async function Home() {
             </Link>
           ))}
         </div>
+
+        {pageCount > 1 && (
+          <nav className="pager" aria-label="Collection pages">
+            <Link className={current === 1 ? 'disabled' : ''} aria-disabled={current === 1} href={`/?page=${current - 1}#collection`}>← Previous</Link>
+            <span className="pager-pages">
+              {Array.from({ length: pageCount }, (_, position) => position + 1).map((number) => (
+                <Link aria-current={number === current ? 'page' : undefined} className={number === current ? 'active' : ''} href={`/?page=${number}#collection`} key={number}>{number}</Link>
+              ))}
+            </span>
+            <Link className={current === pageCount ? 'disabled' : ''} aria-disabled={current === pageCount} href={`/?page=${current + 1}#collection`}>Next →</Link>
+          </nav>
+        )}
+        <p className="pager-count">Showing {start + 1}–{start + shown.length} of {collection.length} objects</p>
       </section>
 
       <section className="principle" id="about">

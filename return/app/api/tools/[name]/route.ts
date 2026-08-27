@@ -1,10 +1,13 @@
 import {
-  countByStatus, createEscalation, getApproval, getEvidenceByIds, getSubmission, listActivity, listApprovals, listObjects,
-  listSubmissions, recordActivity, setSubmissionStatus, workspaceSummary, type SubmissionRow,
+  attachAssetsToSubmission, countByStatus, createEscalation, getApproval, getAsset, getEvidenceByIds, getSubmission,
+  listActivity, listApprovals, listObjectAssets, listObjects, listSubmissionAssets, listSubmissions, recordActivity,
+  setSubmissionStatus, workspaceSummary, type AssetRow, type SubmissionRow,
 } from '@/db/queries';
 import { APPROVAL_TTL_MS, ensureDatabase, sha256 } from '@/db/setup';
 import { buildLabelApprovalSnapshot, canonicalJson } from '@/lib/approval-snapshot';
 import type { Authority, Consent, EvidenceRecord, LabelAssertion, Visibility } from '@/lib/domain/types';
+import { assetAccess, MAX_ASSETS_PER_CONTRIBUTION } from '@/lib/assets/access';
+import { slugFor } from '@/lib/community/object-input';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
 import type { PolicyResult } from '@/lib/policy/types';
 import { evidenceFor, objectRecord, searchCollection } from '@/lib/records';
@@ -13,15 +16,18 @@ import { sessionFromRequest } from '@/lib/session';
 const CURATOR_ONLY = new Set([
   'get_collection_summary', 'list_objects', 'list_submissions', 'get_review_case',
   'build_provenance_timeline', 'compare_evidence', 'draft_label', 'request_clarification',
-  'propose_label_update', 'open_return_review', 'check_approval', 'list_pending_approvals',
+  'propose_label_update', 'open_return_review', 'check_approval', 'list_pending_approvals', 'register_object',
 ]);
+
+/** FR-W1 - reachable from both surfaces; `assetAccess` decides what each role sees. */
+const SHARED_TOOLS = new Set(['list_object_assets', 'get_asset_detail']);
 
 const COMMUNITY_TOOLS = new Set([
   'search_collection', 'get_object_detail', 'get_provenance_timeline',
-  'submit_evidence', 'submit_context_claim', 'check_submission',
+  'submit_evidence', 'submit_context_claim', 'check_submission', 'attach_assets',
 ]);
 
-const KNOWN = new Set([...CURATOR_ONLY, ...COMMUNITY_TOOLS]);
+const KNOWN = new Set([...CURATOR_ONLY, ...COMMUNITY_TOOLS, ...SHARED_TOOLS]);
 
 function invalid(field: string, reason: string, recovery: string) {
   return Response.json({ outcome: 'invalid', field, reason, recovery }, { status: 400 });
@@ -53,9 +59,26 @@ async function escalate(museumId: string, policy: PolicyResult, entry: {
   return { escalation_id: escalationId, escalated_to_curator: true, next: entry.next };
 }
 
+/** The three fields `assetAccess` judges on, pulled off a database row. */
+const assetRefOf = (row: AssetRow) => ({
+  museumId: row.museum_id,
+  visibility: row.visibility as Visibility,
+  consent: row.consent as Consent,
+});
+
+/** Asset metadata for tool output. Never carries file contents or the storage key. */
+function publicAsset(row: AssetRow) {
+  return {
+    id: row.id, kind: row.kind, file_name: row.file_name, media_type: row.content_type,
+    alt_text: row.alt_text, caption: row.caption, byte_size: row.byte_size,
+    consent: row.consent, visibility: row.visibility, quotable: row.consent !== 'private',
+    url: `/api/assets/${row.id}`, created_at: row.created_at,
+  };
+}
+
 /** Public shape of a submission. Bodies of restricted material are withheld. */
 function publicSubmission(row: SubmissionRow) {
-  const withheld = row.consent === 'private' || row.consent === 'research_only';
+  const withheld = row.consent === 'private';
   return {
     id: row.id, object_id: row.object_id, kind: row.kind, title: row.title,
     contributor: row.source, consent: row.consent, status: row.status,
@@ -72,7 +95,7 @@ function publicSubmission(row: SubmissionRow) {
  * what the catalogue means by returning ids and summaries rather than text.
  */
 function listedSubmission(row: SubmissionRow) {
-  const withheld = row.consent === 'private' || row.consent === 'research_only';
+  const withheld = row.consent === 'private';
   return {
     id: row.id, object_id: row.object_id, kind: row.kind, title: row.title,
     consent: row.consent, status: row.status, quotable: !withheld,
@@ -97,6 +120,27 @@ async function refsFrom(museumId: string, args: Record<string, unknown>, objectI
     refs,
     museumMatch: ids.every((id) => known.some((item) => item.id === id && item.objectId === objectId)),
   };
+}
+
+/**
+ * Refs for a proposal that has no object yet (FR-K5).
+ *
+ * `refsFrom` binds each id to one object, which is right for every other action and
+ * wrong here: a record being proposed cannot already own its supporting evidence. The
+ * workspace is still the boundary — ids outside it resolve to sealed and private, so
+ * they carry no authority.
+ */
+async function refsForNewRecord(museumId: string, args: Record<string, unknown>) {
+  const ids = Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [];
+  const known = await getEvidenceByIds(museumId, ids, 'curator');
+  return ids.map((id) => {
+    const found = known.find((item) => item.id === id);
+    return {
+      authority: (found?.authority ?? 'submitted') as Authority,
+      consent: (found?.consent ?? 'private') as Consent,
+      visibility: (found?.visibility ?? 'sealed') as Visibility,
+    };
+  });
 }
 
 /**
@@ -189,7 +233,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       await db.prepare('INSERT INTO submissions (id,museum_id,object_id,kind,title,description,source,consent,requested_outcome,contributor_name,contributor_role,evidence_refs,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
         .bind(id, museumId, record.id, name === 'submit_evidence' ? 'Evidence' : 'Context claim', title,
           String(args.description ?? args.claim ?? ''), String(args.source ?? 'Community agent'),
-          typeof args.consent === 'string' ? args.consent : 'research_only',
+          typeof args.consent === 'string' ? args.consent : 'private',
           String(args.requested_outcome ?? 'Add context'), String(args.source ?? 'Community agent'), role,
           JSON.stringify(Array.isArray(args.evidence_refs) ? args.evidence_refs.map(String) : []), 'received', createdAt, createdAt).run();
       await recordActivity(museumId, 'Community Agent', 'submitted new evidence', title, {
@@ -289,7 +333,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
           ? ['The current label implies clear prior custody, but the 1968 invoice names no prior owner.']
           : ['No verified counterpart is on file for this object yet.'],
         open_questions: record?.questions ?? [],
-        consent_restrictions: row.consent === 'research_only' || row.consent === 'private'
+        consent_restrictions: row.consent === 'private'
           ? ['This material may inform review but cannot be quoted in public output.'] : [],
         untrusted_content: true,
       });
@@ -420,6 +464,120 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
         approvals: rows.map((row) => ({ id: row.id, risk: row.risk, status: row.status, object_id: row.object_id, object_version: row.object_version })),
         open_submissions: counts.all,
         note: 'Polling does not block. Continue other research while a human reviews.',
+      });
+    }
+
+    /* ------------- Assets (FR-W1) ------------- */
+    // None of these carries file contents. Uploads go through `/api/assets`, which
+    // creates the record first; tools only ever move ids (RETURN_PLAN 15.1).
+    case 'list_object_assets': {
+      const record = await objectRecord(museumId, objectId, role === 'curator' ? 'curator' : 'public');
+      if (!record) return invalid(...NO_OBJECT);
+      const rows = await listObjectAssets(museumId, record.id);
+      const decided = rows.map((row) => ({ row, access: assetAccess(assetRefOf(row), { role, museumId }) }));
+      const visible = decided.filter((entry) => entry.access === 'serve');
+      // Sealed material is not counted at all: `assetAccess` answers `absent` for it,
+      // and any count would disclose that it exists.
+      const withheld = decided.filter((entry) => entry.access === 'deny').length;
+      return Response.json({
+        object_id: record.id,
+        count: visible.length,
+        assets: visible.map((entry) => publicAsset(entry.row)),
+        withheld_count: withheld,
+        ...(withheld > 0 ? { note: 'Some material on this record is held for curatorial review and is not listed in full.' } : {}),
+        untrusted_content: true,
+      });
+    }
+
+    case 'get_asset_detail': {
+      const assetId = typeof args.asset_id === 'string' ? args.asset_id : '';
+      const row = assetId ? await getAsset(museumId, assetId) : null;
+      const access = row ? assetAccess(assetRefOf(row), { role, museumId }) : 'absent';
+      // A missing row and an `absent` verdict answer identically, so a sealed asset
+      // cannot be told apart from one that never existed.
+      if (!row || access === 'absent') return invalid('asset_id', 'No asset with that id is available in this workspace.', 'Call list_object_assets to see what is available.');
+      if (access === 'deny') {
+        return Response.json({
+          outcome: 'denied', policy: 'consent_not_public', asset_id: row.id, risk: 'LOW',
+          reason: 'This material is held for curatorial review and cannot be released at this access level.',
+          recovery: 'Ask a curator to review the access question, or use publicly consented material.',
+        }, { status: 403 });
+      }
+      return Response.json({ ...publicAsset(row), object_id: row.object_id, submission_id: row.submission_id, untrusted_content: true });
+    }
+
+    case 'attach_assets': {
+      const submissionId = typeof args.submission_id === 'string' ? args.submission_id : '';
+      const submission = submissionId ? await getSubmission(museumId, submissionId) : null;
+      if (!submission) return invalid('submission_id', 'No contribution with that id exists in this workspace.', 'Submit the contribution first, then attach files to it.');
+      const ids = Array.isArray(args.asset_ids) ? args.asset_ids.filter((value) => typeof value === 'string').map(String) : [];
+      if (ids.length === 0) return invalid('asset_ids', 'No asset ids were supplied.', 'Upload the files first; the upload route returns an id for each.');
+      if (ids.length > MAX_ASSETS_PER_CONTRIBUTION) return invalid('asset_ids', 'A contribution may carry at most ' + MAX_ASSETS_PER_CONTRIBUTION + ' files.', 'Attach fewer files.');
+
+      const policy = evaluatePolicy({ actor: role, action: 'submit_evidence', museumMatch: submission.museum_id === museumId });
+      // Only unattached assets in this workspace move, and they inherit the
+      // contribution's consent. An id belonging to another contribution simply does
+      // not match, so the returned count comes back lower than the ids supplied.
+      const attached = await attachAssetsToSubmission(museumId, submission.id, ids, submission.consent, submission.object_id);
+      await recordActivity(museumId, 'Community Agent', 'attached files to a contribution', attached + ' of ' + ids.length, {
+        tool: 'attach_assets', target: submission.id, risk: policy.risk, policyDecision: 'applied', result: String(attached),
+      });
+      const held = await listSubmissionAssets(museumId, submission.id);
+      return Response.json({
+        ...policy, submission_id: submission.id, attached, requested: ids.length,
+        total_on_contribution: held.length, visibility: 'restricted',
+        note: 'Attached files stay restricted to curatorial review until a curator publishes them.',
+      });
+    }
+
+    /* ------------- Curator: registering a record (FR-K5, FR-X3) ------------- */
+    // Registering creates official museum material, so it sits on the HIGH rung with
+    // label publication: an agent may propose it, a human creates it. This case never
+    // writes to `objects`. The curator console's own route does that, and only after an
+    // explicit human confirmation.
+    case 'register_object': {
+      const title = typeof args.title === 'string' ? args.title.trim() : '';
+      const accession = typeof args.accession === 'string' ? args.accession.trim() : '';
+      const basis = typeof args.basis === 'string' ? args.basis.trim() : '';
+      if (!title) return invalid('title', 'A proposed record needs a title.', 'Name the object as the record would.');
+      if (!accession) return invalid('accession', 'A proposed record needs an accession number.', 'Supply the accession number the museum would assign.');
+      if (!basis) return invalid('basis', 'Say why this object belongs in the record.', 'Explain the basis for adding it.');
+
+      const proposedId = slugFor(title);
+      const existing = proposedId ? await objectRecord(museumId, proposedId, 'curator') : null;
+      if (existing) return invalid('title', `A record already exists at ${existing.id}.`, 'Propose a different title, or add evidence to the existing record.');
+
+      const refs = await refsForNewRecord(museumId, args);
+      const policy = evaluatePolicy({ actor: role, action: 'register_object', museumMatch: true, refs });
+      const proposal = { title, accession, period: args.period ?? null, material: args.material ?? null, origin: args.origin ?? null, basis };
+
+      if (policy.outcome === 'pending_approval') {
+        // Queued as an escalation rather than an approval row: the approval contract is
+        // an immutable label snapshot (A4) and a proposed record is not one. The
+        // escalation queue already carries a tool, its arguments, and a curator action.
+        const proposalId = await createEscalation(museumId, {
+          objectId: null, tool: 'register_object', args: proposal,
+          policy: 'pending_human_registration',
+          sourceRefs: Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [],
+        });
+        await recordActivity(museumId, 'Curator Agent', 'proposed a new collection record', `${title} · ${accession}`, {
+          tool: 'register_object', target: proposedId, risk: 'HIGH', policyDecision: 'pending_approval', result: proposalId,
+        });
+        return Response.json({
+          ...policy, proposal_id: proposalId, proposed_object_id: proposedId, created: false,
+          note: 'Nothing was added to the collection. A curator creates the record.',
+          next: 'Open the curator console and register the record, or add evidence to the proposal.',
+        });
+      }
+
+      return Response.json({
+        ...policy, proposed_object_id: proposedId, created: false,
+        ...await escalate(museumId, policy, {
+          tool: 'register_object', objectId: proposedId, args: proposal,
+          sourceRefs: Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [],
+          action: 'was denied a new collection record',
+          next: 'Cite a verified institutional record, or ask a curator to register it directly.',
+        }),
       });
     }
   }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { registerWebMcpTools } from './register.ts';
-import { communityTools, curatorTools } from './tools.ts';
+import { communityTools, curatorTools, sharedTools } from './tools.ts';
 
 type Registered = {
   name: string;
@@ -27,22 +27,26 @@ function withModelContext(run: (registered: Registered[], unregistered: string[]
   });
 }
 
-test('community surface registers exactly the six community tools', () => withModelContext((registered) => {
+test('community surface registers exactly the nine community tools', () => withModelContext((registered) => {
   registerWebMcpTools('community');
-  assert.equal(registered.length, 6);
+  assert.equal(registered.length, 9);
   assert.deepEqual(registered.map((tool) => tool.name).sort(), communityTools.map((tool) => tool.name).sort());
 }));
 
-test('curator surface registers exactly the twelve curator tools', () => withModelContext((registered) => {
+test('curator surface registers exactly the fifteen curator tools', () => withModelContext((registered) => {
   registerWebMcpTools('curator');
-  assert.equal(registered.length, 12);
+  assert.equal(registered.length, 15);
   assert.deepEqual(registered.map((tool) => tool.name).sort(), curatorTools.map((tool) => tool.name).sort());
 }));
 
-test('no curator tool is reachable from the community surface', () => withModelContext((registered) => {
+test('no curator-only tool is reachable from the community surface', () => withModelContext((registered) => {
   registerWebMcpTools('community');
   const names = new Set(registered.map((tool) => tool.name));
-  for (const tool of curatorTools) assert.equal(names.has(tool.name), false, `${tool.name} leaked to community`);
+  const shared = new Set(sharedTools.map((tool) => tool.name));
+  for (const tool of curatorTools) {
+    if (shared.has(tool.name)) continue;
+    assert.equal(names.has(tool.name), false, `${tool.name} leaked to community`);
+  }
 }));
 
 test('read tools are annotated read-only and write tools are not', () => withModelContext((registered) => {
@@ -133,7 +137,7 @@ test('a remount does not re-register when the browser cannot unregister', () => 
 
   registerWebMcpTools('community')();
   assert.doesNotThrow(() => registerWebMcpTools('community')());
-  assert.equal(held.size, 6);
+  assert.equal(held.size, communityTools.length);
   (globalThis as { document?: unknown }).document = previous;
 });
 
@@ -141,7 +145,7 @@ test('a remount re-registers when the browser can unregister', () => withModelCo
   const cleanup = registerWebMcpTools('community');
   cleanup();
   registerWebMcpTools('community');
-  assert.equal(registered.length, 12, 'cleanup released the names, so re-registration is expected');
+  assert.equal(registered.length, communityTools.length * 2, 'cleanup released the names, so re-registration is expected');
 }));
 
 test('a browser that rejects a tool never breaks the caller', () => {
@@ -157,7 +161,7 @@ test('a browser that rejects a tool never breaks the caller', () => {
   assert.doesNotThrow(() => registerWebMcpTools('curator')());
   console.warn = warn;
   (globalThis as { document?: unknown }).document = previous;
-  assert.equal(attempts, 12, 'every tool should still be attempted');
+  assert.equal(attempts, curatorTools.length, 'every tool should still be attempted');
 });
 
 test('cleanup still aborts when the browser cannot unregister', () => {
@@ -168,7 +172,7 @@ test('cleanup still aborts when the browser cannot unregister', () => {
   };
   const cleanup = registerWebMcpTools('community');
   assert.doesNotThrow(cleanup);
-  assert.equal(registered.length, 6);
+  assert.equal(registered.length, communityTools.length);
   (globalThis as { document?: unknown }).document = previous;
 });
 
@@ -183,7 +187,7 @@ test('an async getTools implementation is never treated as a list', () => {
     },
   };
   assert.doesNotThrow(() => registerWebMcpTools('community'));
-  assert.equal(registered.length, 6);
+  assert.equal(registered.length, communityTools.length);
   (globalThis as { document?: unknown }).document = previous;
 });
 
@@ -295,3 +299,19 @@ test('every required parameter is actually declared', () => {
     }
   }
 });
+
+/* FR-W1 put two asset read tools on both surfaces, because the same call must answer
+   differently by role: a community agent sees only public, publicly-consented assets,
+   a curator sees restricted ones too. `sharedTools` names that set in the catalogue,
+   so the leak test above stays a real boundary check instead of quietly widening. */
+test('the shared tools are the only ones on both surfaces', () => {
+  const community = new Set(communityTools.map((tool) => tool.name));
+  const onBoth = curatorTools.filter((tool) => community.has(tool.name)).map((tool) => tool.name).sort();
+  assert.deepEqual(onBoth, sharedTools.map((tool) => tool.name).sort());
+});
+
+test('the community surface writes nothing beyond its own contributions', () => withModelContext((registered) => {
+  registerWebMcpTools('community');
+  const writers = registered.filter((tool) => tool.annotations?.readOnlyHint === false).map((tool) => tool.name).sort();
+  assert.deepEqual(writers, ['attach_assets', 'submit_context_claim', 'submit_evidence']);
+}));

@@ -1,5 +1,5 @@
 import type { Actor, ActorType, PolicyInput, PolicyResult, Risk } from './types';
-const riskByAction:Record<PolicyInput['action'],Risk>={read:'LOW',draft_label:'LOW',submit_evidence:'MEDIUM',request_clarification:'MEDIUM',publish_label:'HIGH',open_return_review:'HIGH',delete_evidence:'CRITICAL',physical_return:'CRITICAL'};
+const riskByAction:Record<PolicyInput['action'],Risk>={read:'LOW',draft_label:'LOW',submit_evidence:'MEDIUM',request_clarification:'MEDIUM',publish_asset:'MEDIUM',register_object:'HIGH',publish_label:'HIGH',open_return_review:'HIGH',delete_evidence:'CRITICAL',physical_return:'CRITICAL'};
 /** `curator_ui` is a human acting in the console; every other actor reaches the gateway through an agent tool. */
 export const actorTypeOf=(actor:Actor):ActorType=>actor==='curator_ui'?'human':'agent';
 /**
@@ -20,12 +20,12 @@ export const actorTypeOf=(actor:Actor):ActorType=>actor==='curator_ui'?'human':'
  */
 export function evaluatePolicy(input:PolicyInput):PolicyResult {
   const risk=riskByAction[input.action];
-  if(input.actor==='community'&&['publish_label','open_return_review','delete_evidence','physical_return'].includes(input.action))return{outcome:'denied',risk,policy:'role_not_permitted',reason:'Community sessions cannot perform curator actions.',recovery:'Submit evidence or a context claim for curator review.'};
+  if(input.actor==='community'&&['publish_asset','register_object','publish_label','open_return_review','delete_evidence','physical_return'].includes(input.action))return{outcome:'denied',risk,policy:'role_not_permitted',reason:'Community sessions cannot perform curator actions.',recovery:'Submit evidence or a context claim for curator review.'};
   if(!input.museumMatch)return{outcome:'denied',risk,policy:'workspace_mismatch',reason:'The requested record belongs to another workspace.',recovery:'Open the record from the active museum workspace.'};
   if(risk==='CRITICAL')return{outcome:'denied',risk,policy:'outside_agent_surface',reason:'This action is outside the agent tool surface.',recovery:'Document the request for an authorised human process.'};
   const refs=input.refs??[];
   if(input.publicOutput&&refs.some((ref)=>ref.visibility!=='public'))return{outcome:'denied',risk,policy:'visibility_restricted',reason:'Restricted or sealed material cannot appear in public output.',recovery:'Remove the restricted reference or request an access review.'};
-  if(input.publicOutput&&refs.some((ref)=>ref.consent==='private'||ref.consent==='research_only'))return{outcome:'denied',risk,policy:'consent_not_public',reason:'The evidence consent does not permit public quotation.',recovery:'Use it for research only or request updated consent.'};
+  if(input.publicOutput&&refs.some((ref)=>ref.consent==='private'))return{outcome:'denied',risk,policy:'consent_not_public',reason:'The evidence consent does not permit public quotation.',recovery:'Use it for internal research only, or request updated consent.'};
   if(risk==='HIGH'&&actorTypeOf(input.actor)==='agent'&&!refs.some((ref)=>ref.authority==='verified'))return{outcome:'denied',risk,policy:'submitted_sole_authority',escalate:true,reason:'Submitted evidence cannot be the sole authority for an official change.',recovery:'Compare a verified source or escalate the gap to curator review.'};
   if(input.assertions?.some((a)=>a.refIndexes.length===0))return{outcome:'invalid',risk,policy:'assertion_unsupported',reason:'Every public assertion must cite at least one evidence record.',recovery:'Add evidence refs or remove the unsupported assertion.'};
   if(input.assertions?.some((a)=>a.mode==='verified_fact'&&a.refIndexes.every((i)=>refs[i]?.authority!=='verified')))return{outcome:'invalid',risk,policy:'assertion_not_verified',reason:'A verified fact must reference verified evidence.',recovery:'Change the assertion mode or attach a verified reference.'};
