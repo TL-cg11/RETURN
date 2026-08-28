@@ -54,7 +54,7 @@ a { color:inherit; text-decoration:none; }
 .section-heading { display:grid; grid-template-columns:1.4fr .6fr; gap:4rem; align-items:end; margin-bottom:4rem; }
 .section-heading h2 { font:400 clamp(2.6rem,5vw,5rem)/.98 Georgia,serif; letter-spacing:-.045em; max-width:830px; margin:0; }
 .section-heading>p { color:var(--muted); line-height:1.65; font-size:.9rem; max-width:340px; }
-.object-list { border-top:1px solid var(--ink); }
+.object-list { border-top:1px solid var(--ink); overflow-anchor:none; }
 .object-row { display:grid; grid-template-columns:50px 110px 1fr 230px 30px; gap:1.4rem; align-items:center; border-bottom:1px solid var(--line); padding:1rem 0; }
 .object-number { font-family:var(--font-geist-mono); color:var(--muted); font-size:.68rem; }
 .object-thumbnail { height:76px; display:grid; place-items:center; overflow:hidden; }
@@ -307,7 +307,7 @@ a { color:inherit; text-decoration:none; }
 .escalation-actions p { margin:0; color:var(--oxide); font-size:.55rem; }
 @media (max-width:1200px){ .escalation-close { align-items:flex-start; } }
 
-/* Page indicator for long lists. Server-rendered links, no client state. */
+/* Page indicator for progressively enhanced collection paging. */
 .pager { display:flex; align-items:center; gap:.6rem; margin-top:1.4rem; }
 .pager a { padding:.4rem .6rem; color:#727671; font-size:.6rem; text-decoration:none; border:1px solid var(--console-line); }
 .pager a.active { color:var(--ink); background:#e0ded7; border-color:var(--console); font-weight:650; }

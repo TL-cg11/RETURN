@@ -1,5 +1,6 @@
 import { NavLink as Link } from '@/components/shared/nav-link';
 import { CommunityHeader } from '@/components/shared/community-header';
+import { CollectionBrowser } from '@/components/community/collection-browser';
 import { collectionFor } from '@/lib/records';
 import { sessionFromCookies } from '@/lib/session';
 
@@ -19,8 +20,6 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ p
   const gaps = collection.filter((object) => object.gap).length;
   const pageCount = Math.max(1, Math.ceil(collection.length / PER_PAGE));
   const current = Math.min(Math.max(1, Number(page) || 1), pageCount);
-  const start = (current - 1) * PER_PAGE;
-  const shown = collection.slice(start, start + PER_PAGE);
 
   return (
     <main>
@@ -61,30 +60,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ p
           <div><p className="eyebrow">The collection</p><h2 id="collection-title">The collection is still being written.</h2></div>
           <p>Each record shows what is known, what is attributed, and what remains an open question.</p>
         </div>
-        <div className="object-list">
-          {shown.map((object, index) => (
-            <Link className="object-row" href={`/objects/${object.id}`} key={object.id}>
-              <span className="object-number">{String(start + index + 1).padStart(2, '0')}</span>
-              <span className={`object-thumbnail ${object.tone}`} aria-hidden="true"><i /></span>
-              <span className="object-name"><strong>{object.title}</strong><small>{object.date}</small></span>
-              <span className="object-note">{object.gap ? `Unrecorded ${object.gap}` : object.status}</span>
-              <span className="row-arrow" aria-hidden="true">↗</span>
-            </Link>
-          ))}
-        </div>
-
-        {pageCount > 1 && (
-          <nav className="pager" aria-label="Collection pages">
-            <Link className={current === 1 ? 'disabled' : ''} aria-disabled={current === 1} href={`/?page=${current - 1}#collection`}>← Previous</Link>
-            <span className="pager-pages">
-              {Array.from({ length: pageCount }, (_, position) => position + 1).map((number) => (
-                <Link aria-current={number === current ? 'page' : undefined} className={number === current ? 'active' : ''} href={`/?page=${number}#collection`} key={number}>{number}</Link>
-              ))}
-            </span>
-            <Link className={current === pageCount ? 'disabled' : ''} aria-disabled={current === pageCount} href={`/?page=${current + 1}#collection`}>Next →</Link>
-          </nav>
-        )}
-        <p className="pager-count">Showing {start + 1}–{start + shown.length} of {collection.length} objects</p>
+        <CollectionBrowser collection={collection} initialPage={current} perPage={PER_PAGE} />
       </section>
 
       <section className="principle" id="about">
