@@ -151,8 +151,8 @@ export async function listSubmissionEvidenceIds(museumId: string, submissionId: 
   const db = await ensureDatabase(museumId);
   const submission = await getSubmission(museumId, submissionId);
   if (!submission) return [];
-  const activity = await db.prepare("SELECT target FROM activity WHERE museum_id=? AND result=? AND target<>''")
-    .bind(museumId, submissionId).all<{ target: string }>();
+  const activity = await db.prepare("SELECT target FROM activity WHERE museum_id=? AND (result=? OR ? LIKE result || '-museum_%') AND target<>''")
+    .bind(museumId, submissionId, submissionId).all<{ target: string }>();
   return [...new Set([...parseArray(submission.evidence_refs), ...(activity.results ?? []).map((row) => row.target)])];
 }
 

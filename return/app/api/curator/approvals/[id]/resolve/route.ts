@@ -63,7 +63,8 @@ function linkedSubmissionUpdate(
     AND EXISTS (SELECT 1 FROM approvals WHERE museum_id=? AND id=? AND status=? AND resolved_at=?)
     AND (
       EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(submissions.evidence_refs) THEN submissions.evidence_refs ELSE '[]' END) ref WHERE ref.value IN (${holes}))
-      OR EXISTS (SELECT 1 FROM activity a WHERE a.museum_id=submissions.museum_id AND a.result=submissions.id AND a.target IN (${holes}))
+      OR EXISTS (SELECT 1 FROM activity a WHERE a.museum_id=submissions.museum_id
+        AND (a.result=submissions.id OR submissions.id LIKE a.result || '-museum_%') AND a.target IN (${holes}))
     )`)
     .bind(status, now, museumId, objectId, museumId, approvalId, approvalStatus, now, ...evidenceIds, ...evidenceIds);
 }

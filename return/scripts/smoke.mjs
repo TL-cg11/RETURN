@@ -349,7 +349,7 @@ async function main() {
   const baseVersion = (await tool('get_object_detail', { object_id: 'moonbird-mask' })).json?.object?.version;
   await setRole('curator');
 
-  const edited = 'The museum acquired this mask through Lorne Gallery in 1968. Community material places it in Aru village in 1959. The intervening custody is under joint research.';
+  const edited = `The museum acquired this mask through Lorne Gallery in 1968. Community material places it in Aru village in 1959. The intervening custody is under joint research (review cycle ${baseVersion + 1}).`;
   const resolveResponse = await post(`/api/curator/approvals/${approvalId}/resolve`, { action: 'approve_with_edit', draft: edited, editReason: 'Preserve the verified acquisition while attributing the community material.' });
   check('approve-with-edit is recorded as such', resolveResponse.status === 200 && resolveResponse.json.resolution === 'approved_with_edit', JSON.stringify(resolveResponse.json));
   check('approval publishes a new label revision', resolveResponse.json?.published === true && resolveResponse.json?.revision === baseVersion + 1, JSON.stringify(resolveResponse.json));
@@ -358,6 +358,7 @@ async function main() {
   check('approved text becomes the public label', publishedDetail.json?.object?.label === edited, JSON.stringify(publishedDetail.json?.object?.label));
   check('publication advances the object version', publishedDetail.json?.object?.version === baseVersion + 1, `version ${publishedDetail.json?.object?.version} from ${baseVersion}`);
   check('the public revision number tracks the publication', publishedDetail.json?.object?.label_revision === publishedDetail.json?.object?.version, `revision ${publishedDetail.json?.object?.label_revision}`);
+  await setRole('curator');
   const reflectedList = await tool('list_submissions', { status: 'reflected in label', object_id: 'moonbird-mask' });
   const reflectedSeed = reflectedList.json?.submissions?.find((item) => item.title === '1959 Aru village photograph');
   check('publishing updates every evidence-linked contribution atomically', !!reflectedSeed, JSON.stringify(reflectedList.json?.submissions));
