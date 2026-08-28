@@ -7,6 +7,7 @@ export const submissions = sqliteTable('submissions', {
   description:text('description').notNull(), source:text('source').notNull(), consent:text('consent').notNull(), requestedOutcome:text('requested_outcome').notNull(),
   contributorName:text('contributor_name'), contributorRole:text('contributor_role'), evidenceRefs:text('evidence_refs').notNull().default('[]'),
   status:text('status').notNull().default('received'), details:text('details').notNull().default('[]'), assetIds:text('asset_ids').notNull().default('[]'),
+  clarifications:text('clarifications').notNull().default('[]'),
   createdAt:integer('created_at').notNull(), updatedAt:integer('updated_at').notNull().default(0),
 }, (table) => [index('idx_submissions_museum_status').on(table.museumId, table.status)]);
 export const approvals = sqliteTable('approvals', {

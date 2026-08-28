@@ -5,7 +5,7 @@ export type SubmissionRow = {
   id: string; museum_id: string; object_id: string; kind: string; title: string;
   description: string; source: string; consent: string; requested_outcome: string;
   contributor_name: string | null; contributor_role: string | null; evidence_refs: string;
-  status: string; details: string; asset_ids: string; created_at: number; updated_at: number;
+  status: string; details: string; asset_ids: string; clarifications: string; created_at: number; updated_at: number;
 };
 export type ActivityRow = {
   id: string; actor: string; action: string; detail: string; created_at: number;
@@ -151,8 +151,13 @@ export async function listSubmissionEvidenceIds(museumId: string, submissionId: 
   const db = await ensureDatabase(museumId);
   const submission = await getSubmission(museumId, submissionId);
   if (!submission) return [];
-  const activity = await db.prepare("SELECT target FROM activity WHERE museum_id=? AND (result=? OR ? LIKE result || '-museum_%') AND target<>''")
-    .bind(museumId, submissionId, submissionId).all<{ target: string }>();
+  // Seeded contributions carry a per-workspace suffix (`SUB-1042-${museumId}`) while the
+  // seeded activity row holds the bare id. That is an exact string relation, so it is
+  // written as one. It used to be a LIKE pattern built from the `result` column, which
+  // D1 rejects outright once the pattern grows past its limit — and it always does on a
+  // workspace whose id is a UUID, which is every workspace except the original demo one.
+  const activity = await db.prepare("SELECT target FROM activity WHERE museum_id=? AND (result=? OR ?=result || '-' || ?) AND target<>''")
+    .bind(museumId, submissionId, submissionId, museumId).all<{ target: string }>();
   return [...new Set([...parseArray(submission.evidence_refs), ...(activity.results ?? []).map((row) => row.target)])];
 }
 
@@ -514,4 +519,39 @@ export async function createObject(museumId: string, input: NewObjectInput, appr
         'verified', 'verified', '[]', 0, 10, now, now),
   ]);
   return { created: true as const, labelId };
+}
+
+export type Clarification = { question: string; askedAt: number; askedBy: string };
+
+/** Reads the curator's questions on one contribution, newest last. */
+export function parseClarifications(raw: string): Clarification[] {
+  try {
+    const parsed: unknown = JSON.parse(raw || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((entry) => {
+      const item = entry as Partial<Clarification>;
+      return typeof item?.question === 'string' && item.question.trim()
+        ? [{ question: item.question, askedAt: Number(item.askedAt) || 0, askedBy: String(item.askedBy ?? 'Curator') }]
+        : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Adds one curator question to a contribution and returns the whole history.
+ *
+ * A list rather than a single column because a review can need more than one question,
+ * and because replacing the previous one would erase what was already asked — the case
+ * screen is the only place a curator can see it.
+ */
+export async function appendClarification(museumId: string, submissionId: string, question: string, askedBy = 'Mina, Curator') {
+  const db = await ensureDatabase(museumId);
+  const row = await getSubmission(museumId, submissionId);
+  if (!row) return [];
+  const history = [...parseClarifications(row.clarifications), { question: question.trim().slice(0, 1000), askedAt: Date.now(), askedBy }];
+  await db.prepare('UPDATE submissions SET clarifications=?, updated_at=? WHERE museum_id=? AND id=?')
+    .bind(JSON.stringify(history), Date.now(), museumId, submissionId).run();
+  return history;
 }

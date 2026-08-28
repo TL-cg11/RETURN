@@ -53,13 +53,20 @@ function subscribeNav(onChange: () => void) {
 }
 
 export function CuratorShell({
-  children, approval, pendingCount, submissionCount,
+  children, approvals, submissionCount,
 }: {
-  children: ReactNode; approval: PendingApproval | null; pendingCount: number; submissionCount: number;
+  children: ReactNode; approvals: PendingApproval[]; submissionCount: number;
 }) {
   const path = usePathname();
   const router = useRouter();
   const [drawer, setDrawer] = useState(false);
+  // Which of the pending approvals the drawer shows. Null means the head of the queue,
+  // so the top-bar trigger behaves exactly as it always did.
+  const [openedId, setOpenedId] = useState<string | null>(null);
+  const pendingCount = approvals.length;
+  // Falls back to the head of the queue, so the top-bar trigger and a first render both
+  // land on something sensible without a separate default.
+  const approval = approvals.find((item) => item.id === openedId) ?? approvals[0] ?? null;
   const [panel, setPanel] = useState<'tools' | 'policy' | null>(null);
   const collapsed = useSyncExternalStore(subscribeNav, readNavCollapsed, () => false);
   const [mcpAvailable, setMcpAvailable] = useState<boolean | null>(null);
@@ -87,10 +94,21 @@ export function CuratorShell({
   }
 
   useEffect(() => {
-    const open = () => setDrawer(true);
+    // A case screen names the record it wants by object id. Without that the drawer
+    // opens whatever happens to be first in the queue, which is a different record's
+    // label revision (FR2-K2).
+    const open = (event: Event) => {
+      const wanted = (event as CustomEvent<{ objectId?: string }>).detail?.objectId;
+      if (wanted) {
+        const match = approvals.find((item) => item.objectId === wanted);
+        if (!match) return;
+        setOpenedId(match.id);
+      }
+      setDrawer(true);
+    };
     window.addEventListener('open-approval', open);
     return () => window.removeEventListener('open-approval', open);
-  }, []);
+  }, [approvals]);
 
   useEffect(() => {
     if (!drawer) return;
@@ -149,7 +167,7 @@ export function CuratorShell({
         <Link className="wordmark inverse" href="/curator">RE<span>:</span>TURN</Link>
         <div className="console-context"><b>Halcyon Museum</b><span>Curatorial workspace</span></div>
         <div className="console-actions">
-          <button type="button" className="approval-trigger" onClick={() => setDrawer(true)} disabled={!approval}>
+          <button type="button" className="approval-trigger" onClick={() => { setOpenedId(null); setDrawer(true); }} disabled={!approval}>
             <i>{pendingCount}</i> {approval ? 'Pending approval' : 'No pending approval'}
           </button>
           <button type="button" className="role-switch dark" onClick={switchToCommunity}>Community view ↗</button>
@@ -268,6 +286,23 @@ export function CuratorShell({
               </div>
               <button type="button" onClick={() => setDrawer(false)} aria-label="Close">×</button>
             </header>
+
+            {/* FR2-K3 — every waiting approval is reachable, not only the first. A badge
+                that says two and a drawer that opens one is a drawer lying about the queue. */}
+            {pendingCount > 1 && (
+              <nav className="approval-queue" aria-label="Approvals awaiting review">
+                <span>{pendingCount} awaiting review</span>
+                {approvals.map((item, index) => (
+                  <button
+                    type="button" key={item.id}
+                    className={item.id === approval.id ? 'active' : ''}
+                    aria-current={item.id === approval.id ? 'true' : undefined}
+                    title={`${item.id} · ${item.objectTitle}`}
+                    onClick={() => setOpenedId(item.id)}
+                  >{index + 1}. {item.objectTitle}</button>
+                ))}
+              </nav>
+            )}
 
             {resolved ? (
               <div className="resolved-state">

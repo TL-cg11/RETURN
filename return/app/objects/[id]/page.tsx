@@ -87,6 +87,11 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
       width: row.width,
       height: row.height,
     }));
+  // FR2-D1 — documents and recordings were filtered out one line above and never
+  // reached the public record at all, however far a curator had published them.
+  const publicFileRows = assetRows
+    .filter((row) => row.kind !== 'image')
+    .filter((row) => assetAccess({ museumId: row.museum_id, visibility: row.visibility as Visibility, consent: row.consent as Consent }, { role: 'community', museumId }) === 'serve');
   const currentPublication = publications[0];
   const previousPublication = publications[1];
 
@@ -152,6 +157,32 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
           ))}
         </div>
       </section>
+
+      {/* FR2-D1 — files that are not photographs. They are published material like any
+          other, so they belong on the record rather than only in the curator's case. */}
+      {publicFileRows.length > 0 && (
+        <section className="record-files">
+          <div className="section-heading compact">
+            <div>
+              <p className="eyebrow">Documents and recordings</p>
+              <h2>{publicFileRows.length} file{publicFileRows.length === 1 ? '' : 's'} on this record.</h2>
+            </div>
+            <p className="context-note">Files a curator has published. Material still under review is not listed here.</p>
+          </div>
+          <ul className="file-list">
+            {publicFileRows.map((row) => (
+              <li key={row.id}>
+                <span className="file-mark" aria-hidden="true">{row.kind === 'audio' ? '◉' : '≡'}</span>
+                <div>
+                  <a href={`/api/assets/${row.id}?download=1`} download>{row.caption || row.file_name}</a>
+                  <small>{row.kind} · {Math.max(1, Math.round(row.byte_size / 1024))} KB · {row.submission_id ? 'Community contribution' : 'Museum collection file'}</small>
+                </div>
+                <span className="file-get" aria-hidden="true">↓</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {/* FR-O2 — what the community added, marked as such and never merged into the
           institutional record above. Only consent-permitting material reaches this list,

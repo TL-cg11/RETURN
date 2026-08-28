@@ -3,7 +3,9 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
-export function EvidenceDeskActions({ submissionId, status }: { submissionId: string; status: string }) {
+export function EvidenceDeskActions({ submissionId, objectId, hasPendingApproval, askedCount }: {
+  submissionId: string; objectId: string; hasPendingApproval: boolean; askedCount: number;
+}) {
   const router = useRouter();
   const [asking, setAsking] = useState(false);
   const [question, setQuestion] = useState('Can you confirm who made this record, and where it was kept before it reached you?');
@@ -39,13 +41,22 @@ export function EvidenceDeskActions({ submissionId, status }: { submissionId: st
           </div>
         </div>
       ) : (
-        <button type="button" onClick={() => setAsking(true)} disabled={status === 'needs information'}>
-          {status === 'needs information' ? 'Clarification requested' : 'Request clarification'}
+        // A review can need more than one question. Disabling this after the first left the
+        // curator no way to ask again, and no way to see what had already been asked.
+        <button type="button" onClick={() => setAsking(true)}>
+          {askedCount > 0 ? `Ask another question (${askedCount} asked)` : 'Request clarification'}
         </button>
       )}
 
-      <button type="button" className="primary" onClick={() => window.dispatchEvent(new Event('open-approval'))}>
-        Review proposed update <span aria-hidden="true">→</span>
+      {/* Names the record it wants, so a queue entry for another object is never opened
+          from here, and says plainly when this record has nothing waiting (FR2-K2). */}
+      <button
+        type="button" className="primary" disabled={!hasPendingApproval}
+        title={hasPendingApproval ? undefined : 'No proposed revision is waiting for this record.'}
+        onClick={() => window.dispatchEvent(new CustomEvent('open-approval', { detail: { objectId } }))}
+      >
+        {hasPendingApproval ? 'Review proposed update' : 'No proposed update waiting'}
+        {hasPendingApproval && <span aria-hidden="true"> →</span>}
       </button>
 
       {result && <p className="clarify-result" role="status">{result}</p>}

@@ -1,6 +1,6 @@
 import { NavLink as Link } from '@/components/shared/nav-link';
 import { notFound } from 'next/navigation';
-import { getSubmission, getSubmissionPublicationOutcome, listSubmissionAssets } from '@/db/queries';
+import { getSubmission, getSubmissionPublicationOutcome, listSubmissionAssets, parseClarifications } from '@/db/queries';
 import { CommunityHeader } from '@/components/shared/community-header';
 import { LabelRevisionDiff } from '@/components/community/label-revision-diff';
 import { CONTRIBUTION_KINDS, fieldsFor, summariseDetail, type ContributionKind, type KindDetail } from '@/lib/community/contribution';
@@ -59,6 +59,7 @@ export default async function SubmissionStatus({ params }: { params: Promise<{ i
   ]);
   const current = stageIndex(submission.status);
   const details = parseDetails(submission.details);
+  const clarifications = parseClarifications(submission.clarifications);
 
   // FR-C6 — what the contributor can honestly be told about their effect on the
   // record. The label carries a publication timestamp and a revision number, so
@@ -94,8 +95,23 @@ export default async function SubmissionStatus({ params }: { params: Promise<{ i
               </li>
             ))}
           </ol>
-          {submission.status === 'needs information' && (
+          {submission.status === 'needs information' && clarifications.length === 0 && (
             <p className="form-help">A curator needs more information before review can continue. No outcome has been recorded yet.</p>
+          )}
+          {/* FR2-K1 — the question itself, not the fact that one exists. */}
+          {clarifications.length > 0 && (
+            <div className="clarification-thread">
+              <p className="eyebrow">{clarifications.length === 1 ? 'A curator asked' : `A curator asked ${clarifications.length} questions`}</p>
+              <ol>
+                {clarifications.map((item) => (
+                  <li key={`${item.askedAt}-${item.question}`}>
+                    <blockquote>{item.question}</blockquote>
+                    <small>{item.askedBy} · {relativeTime(item.askedAt)}</small>
+                  </li>
+                ))}
+              </ol>
+              <p className="form-help">Reply by submitting the missing detail as a new contribution to the same record.</p>
+            </div>
           )}
           {closed && (
             <p className="form-help">The recorded status is closed. It does not claim that the submitted account was verified, and no label change is attributed to it.</p>

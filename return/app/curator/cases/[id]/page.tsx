@@ -1,6 +1,6 @@
 import { NavLink as Link } from '@/components/shared/nav-link';
 import { notFound } from 'next/navigation';
-import { getSubmission, listSubmissionAssets } from '@/db/queries';
+import { getSubmission, listApprovals, listSubmissionAssets, parseClarifications } from '@/db/queries';
 import { AssetPublishActions } from '@/components/curator/asset-publish-actions';
 import { EvidenceDeskActions } from '@/components/curator/evidence-desk-actions';
 import { SourceMatrix, sourceFromEvidence, type MatrixSource } from '@/components/curator/source-matrix';
@@ -37,12 +37,16 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
   const submission = await getSubmission(museumId, id);
   if (!submission) notFound();
 
-  const [record, evidence, assets] = await Promise.all([
+  const [record, evidence, assets, pendingApprovals] = await Promise.all([
     objectRecord(museumId, submission.object_id, 'curator'),
     evidenceFor(museumId, submission.object_id, 'curator'),
     listSubmissionAssets(museumId, submission.id),
+    listApprovals(museumId, 'pending'),
   ]);
+  // Only this record's approval may be opened from this screen (FR2-K2).
+  const hasPendingApproval = pendingApprovals.some((row) => row.object_id === submission.object_id);
   const details = parseDetails(submission.details);
+  const clarifications = parseClarifications(submission.clarifications);
   const verified = evidence.filter((item) => item.authority === 'verified');
   const counterpart = verified[0];
   // FR-K3 — the paired layout below holds for two sources and breaks for three.
@@ -186,7 +190,19 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
               ? 'Replace the definitive acquisition phrase. Attribute the submitted account and mark movement as an open question.'
               : 'Record the submitted context as an attributed claim without changing the documented chain of custody.'}</p>
           </section>
-          <EvidenceDeskActions submissionId={submission.id} status={submission.status} />
+          {/* What has already been asked, so a curator is not writing blind (FR2-K1). */}
+          {clarifications.length > 0 && (
+            <section className="asked-already">
+              <p className="analysis-label question">Asked of the contributor · {clarifications.length}</p>
+              <ul>
+                {clarifications.map((item) => (
+                  <li key={`${item.askedAt}-${item.question}`}>{item.question}<small>{relativeTime(item.askedAt)}</small></li>
+                ))}
+              </ul>
+            </section>
+          )}
+          <EvidenceDeskActions submissionId={submission.id} objectId={submission.object_id}
+            hasPendingApproval={hasPendingApproval} askedCount={clarifications.length} />
         </aside>
       </div>
 

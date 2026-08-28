@@ -1,5 +1,6 @@
 import {
   attachAssetsToSubmission, countByStatus, createEscalation, getApproval, getAsset, getEvidenceByIds, getSubmission,
+  appendClarification, parseClarifications,
   listActivity, listApprovals, listObjectAssets, listObjects, listSubmissionAssets, listSubmissions, recordActivity,
   setSubmissionStatus, workspaceSummary, type AssetRow, type SubmissionRow,
 } from '@/db/queries';
@@ -246,12 +247,24 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       const id = typeof args.submission_id === 'string' ? args.submission_id : '';
       const row = id ? await getSubmission(museumId, id) : null;
       if (!row) return invalid('submission_id', 'No contribution with that id exists in this workspace.', 'Use the id returned by submit_evidence.');
+      // FR2-K1 — the latest question verbatim, not a sentence saying one exists. Only the
+      // latest, with a count beside it, so a long review cannot push this read past the
+      // single-record output budget (WEBMCP_TOOLS §1.4).
+      const asked = parseClarifications(row.clarifications);
+      const latest = asked[asked.length - 1];
       return Response.json({
         id: row.id, status: row.status, object_id: row.object_id, consent: row.consent,
         requested_outcome: row.requested_outcome,
-        message: row.status === 'needs information'
-          ? 'A curator asked a follow-up question about this contribution.'
-          : 'Source and consent review is next. The public record has not changed.',
+        message: latest
+          ? 'A curator asked a follow-up question. It is quoted in curator_question.'
+          : row.status === 'needs information'
+            ? 'A curator asked a follow-up question about this contribution.'
+            : 'Source and consent review is next. The public record has not changed.',
+        ...(latest ? {
+          curator_question: latest.question.slice(0, 400),
+          questions_asked: asked.length,
+          next: 'Answer by submitting the missing detail as a new contribution to the same object.',
+        } : {}),
       });
     }
 
@@ -361,6 +374,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       if (!question) return invalid('question', 'A clarification needs a question.', 'Ask about date, place, source, or consent scope.');
       const row = id ? await getSubmission(museumId, id) : null;
       if (!row) return invalid('submission_id', 'No contribution with that id exists in this workspace.', 'Call list_submissions to list open contributions.');
+      // The agent surface stores the question the same way the console does. A question
+      // asked through a tool is no less a question the contributor has to be able to read.
+      const asked = await appendClarification(museumId, id, question, 'Curator Agent');
       await setSubmissionStatus(museumId, id, 'needs information');
       const clarifyPolicy = evaluatePolicy({ actor: role, action: 'request_clarification', museumMatch: row.museum_id === museumId });
       await recordActivity(museumId, 'Curator Agent', 'requested clarification', `${row.title} · ${question}`, {
@@ -369,7 +385,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       });
       return Response.json({
         ...clarifyPolicy,
-        submission_id: id, status: 'needs information',
+        submission_id: id, status: 'needs information', questions_asked: asked.length,
+        note: 'The contributor can read this question on their submission page.',
       });
     }
 

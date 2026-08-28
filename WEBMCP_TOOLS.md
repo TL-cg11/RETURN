@@ -293,6 +293,20 @@
 
 ---
 
+## 3A. `check_submission` · `request_clarification` 응답 (FR2-K1)
+
+큐레이터의 질문은 **활동 로그가 아니라 제출물에** 남고, 두 도구가 그것을 실어 나른다.
+
+- `check_submission` 은 **가장 최근 질문 원문**을 `curator_question` 으로 반환하고,
+  `questions_asked` 로 총 건수를, `next` 로 답하는 방법을 함께 준다.
+  최근 1건만 싣는 이유는 §1.4 의 단건 읽기 출력 예산(1800자) 때문이다 — 오래 이어진 검토가
+  이 응답을 예산 밖으로 밀지 않게 한다.
+- `request_clarification` 은 저장 후 `questions_asked` 를 돌려주고, 기여자가 읽을 수 있다는
+  사실을 `note` 로 말한다. **콘솔과 도구가 같은 곳에 쓴다** — 도구로 물은 질문도 기여자가
+  읽어야 하는 질문이기 때문이다.
+
+---
+
 ## 3B. 자산 툴 (FR-W1) — Community 1 + Shared 2
 
 **어느 툴도 바이너리를 받지 않는다.** 업로드는 전용 라우트(`POST /api/assets`)가 처리해 `assets`

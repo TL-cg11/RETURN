@@ -78,6 +78,13 @@ async function main() {
   const unknown = await get('/objects/not-a-real-object');
   check('GET /objects/<unknown> is 404', unknown.status === 404, `status ${unknown.status}`);
 
+  // FR2-M1 — the magnifier is offered on every record, including the seven with no
+  // published photograph, where a drawn stand-in fills the frame.
+  const withoutPhotos = await get('/objects/tide-listening-stone');
+  check('a record with no photograph still offers the magnifier', withoutPhotos.text.includes('gallery-zoom'));
+  check('and says the illustration is standing in for one', withoutPhotos.text.includes('stands in for one'));
+  check('it offers no download, because there is no file', !withoutPhotos.text.includes('gallery-download'));
+
   const landing = await get('/');
   // FR-M4 paginated the collection, so the landing page shows a page of it, not all of it.
   const pages = [landing, await get('/?page=2')];
@@ -390,6 +397,25 @@ async function main() {
   await setRole('community');
   const contributorView = await tool('check_submission', { submission_id: submissionId });
   check('the contributor sees the curator follow-up', contributorView.json?.status === 'needs information' && contributorView.json.message.includes('follow-up'));
+  // FR2-K1 — the question itself, not a sentence saying one was asked.
+  // Whatever was asked, the contributor is given the words rather than a notice that
+  // words exist. Asserted against the stored question so the check does not depend on
+  // which surface asked or what it happened to say.
+  const quoted = contributorView.json?.curator_question;
+  check('the contributor is given the question verbatim', typeof quoted === 'string' && quoted.length > 0, JSON.stringify(quoted));
+  check('and is told how to answer it', !!contributorView.json?.next);
+  const askedBefore = contributorView.json?.questions_asked ?? 0;
+  const statusScreen = await get(`/submissions/${submissionId}`);
+  check('the status page quotes the question too', !!quoted && statusScreen.text.includes(quoted));
+
+  await setRole('curator');
+  const secondQuestion = 'A second question, asked after the first.';
+  const second = await post(`/api/curator/submissions/${submissionId}/clarify`, { question: secondQuestion });
+  check('a curator may ask more than once', second.status === 200, `status ${second.status}`);
+  await setRole('community');
+  const bothAsked = await tool('check_submission', { submission_id: submissionId });
+  check('every question asked is kept', bothAsked.json?.questions_asked === askedBefore + 1, `${bothAsked.json?.questions_asked} from ${askedBefore}`);
+  check('the latest question is the one quoted', bothAsked.json?.curator_question === secondQuestion, JSON.stringify(bothAsked.json?.curator_question));
 
   /* ---------- 9b. assets ---------- */
   section('asset pipeline');
@@ -570,6 +596,42 @@ async function main() {
   check('a consented contribution is', objectPage.text.includes('Publishable photograph'));
   check('the contributor description is used as alt text', objectPage.text.includes('A carved mask outside a meeting house'));
   check('no uploaded filename is used as alt text', !/alt="[^"]*IMG_4432/.test(objectPage.text));
+
+  // FR2-D1 — a published document has to reach the public record, not only the case.
+  // FR2-D2 — and both photographs and files have to be obtainable.
+  await setRole('community');
+  const pdfBody = new FormData();
+  pdfBody.append('file', new Blob([new TextEncoder().encode('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n')], { type: 'application/pdf' }), 'registry.pdf');
+  const pdfUpload = await req('/api/assets', { method: 'POST', body: pdfBody });
+  check('a document upload is accepted', pdfUpload.status === 200 && pdfUpload.json?.kind === 'document', `status ${pdfUpload.status}`);
+  const pdfId = pdfUpload.json?.id;
+  const pdfSubmission = await post('/api/community/evidence', {
+    objectId: 'moonbird-mask', kinds: ['Document'],
+    details: [{ kind: 'Document', values: { document_type: 'Harbour registry excerpt' } }],
+    assetIds: [pdfId], title: 'Registry excerpt', source: 'Verification run', consent: 'public_attributed',
+  });
+  check('the document is attached to a contribution', pdfSubmission.status === 200);
+
+  const beforePublish = await get('/objects/moonbird-mask');
+  check('an unpublished document stays off the public record', !beforePublish.text.includes(pdfId));
+  await setRole('curator');
+  await post(`/api/curator/assets/${pdfId}/publish`, { publish: true });
+  await setRole('community');
+  const afterPublish = await get('/objects/moonbird-mask');
+  check('a published document reaches the public record', afterPublish.text.includes(pdfId));
+  check('and it is offered as a download', afterPublish.text.includes(`${pdfId}?download=1`));
+
+  const inlineImage = await get(`/api/assets/${openUpload.json?.id}`);
+  check('a photograph is served inline so the gallery can draw it', inlineImage.status === 200);
+  const askedForFile = await fetch(`${base}/api/assets/${openUpload.json?.id}?download=1`, { headers: { cookie: cookieHeader() } });
+  check('the same photograph can be asked for as a file', (askedForFile.headers.get('content-disposition') ?? '').startsWith('attachment'), askedForFile.headers.get('content-disposition'));
+
+  // The download flag changes the disposition and nothing else.
+  await setRole('curator');
+  await post(`/api/curator/assets/${pdfId}/publish`, { publish: false });
+  await setRole('community');
+  const withheldDownload = await get(`/api/assets/${pdfId}?download=1`);
+  check('asking for a download cannot bypass the access gate', withheldDownload.status === 403, `status ${withheldDownload.status}`);
 
   await setRole('curator');
   const withdrawn = await post(`/api/curator/assets/${openUpload.json?.id}/publish`, { publish: false });

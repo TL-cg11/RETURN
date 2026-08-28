@@ -309,6 +309,8 @@ D1에서는 배열과 구조화 snapshot을 JSON 문자열로 저장한다.
 17. `public_anonymous` 기여는 본문은 공개하되 기여자 이름을 표기하지 않는다.
 18. 새 유물은 `objects` 와 revision 1 `label_publications` 를 한 트랜잭션으로 만든다. 라벨 없는 유물은 존재하지 않는다.
 19. `objects.id` 와 `accession_number` 는 워크스페이스 안에서 유일하다. 충돌하면 등록을 거부한다.
+20. 큐레이터의 질문은 `submissions.clarifications` 에 목록으로 남는다. 활동 로그가 아니라 여기가 기여자에게 보이는 원본이다.
+21. 자산 요청의 `?download=1` 은 `content-disposition` 만 바꾼다. 접근 판정은 동일하다.
 
 ### 5.1 `assets` — 기여·기록 자산
 
@@ -351,6 +353,7 @@ D1에서는 배열과 구조화 snapshot을 JSON 문자열로 저장한다.
 | `0003_consent_three_levels.sql` | `research_only` 를 `private` 으로 이관 (FR-X1) |
 | `0004_assets.sql` | `assets` 생성 — 기여·기록 자산 (FR-D1·FR-D2) |
 | `0005_contribution_detail.sql` | `submissions.details` · `submissions.asset_ids` 추가 — 종류별 입력과 첨부 (FR-C1·C3·C4) |
+| `0006_clarifications.sql` | `submissions.clarifications` 추가 — 큐레이터 질문 이력 (FR2-K1) |
 
 Cloudflare D1에 수동 적용할 경우 반드시 번호 순서대로 한 번씩만 실행한다. 코드의 `ensureDatabase()`는 기존 개발·배포 DB에서 누락된 테이블과 컬럼을 보정하는 호환 경로이며, SQL 마이그레이션이 배포 스키마의 기준이다.
 

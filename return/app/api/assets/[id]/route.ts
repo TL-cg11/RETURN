@@ -14,6 +14,10 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const session = await sessionFromRequest(request);
+  // `?download=1` asks for the file rather than a view of it (FR2-D2). It changes only
+  // the disposition — the access decision below is identical either way, so a download
+  // link can never reach material the inline view would refuse.
+  const asDownload = new URL(request.url).searchParams.get('download') === '1';
   const row = await getAssetRow(session.museumId, id);
   if (!row) return new Response('Not found', { status: 404 });
 
@@ -31,8 +35,12 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     headers: {
       'content-type': row.content_type,
       'content-length': String(row.byte_size),
-      // Never inline: an uploaded document renders in its own context, not this origin's.
-      'content-disposition': row.kind === 'image' ? 'inline' : `attachment; filename="${row.file_name.replaceAll('"', '')}"`,
+      // A photograph is shown inline so the gallery can draw it. Everything else is handed
+      // over, because an uploaded document renders in its own context rather than this
+      // origin's — and `?download=1` asks for that treatment for a photograph too.
+      'content-disposition': row.kind === 'image' && !asDownload
+        ? 'inline'
+        : `attachment; filename="${row.file_name.replaceAll('"', '')}"`,
       'content-security-policy': "default-src 'none'; sandbox",
       'x-content-type-options': 'nosniff',
       // Access depends on the session role, so a shared cache must not answer for another.
