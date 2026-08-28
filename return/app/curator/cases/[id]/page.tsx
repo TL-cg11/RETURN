@@ -1,6 +1,7 @@
 import { NavLink as Link } from '@/components/shared/nav-link';
 import { notFound } from 'next/navigation';
 import { getSubmission, listApprovals, listSubmissionAssets, parseClarifications } from '@/db/queries';
+import { isQuotable } from '@/lib/domain/types';
 import { AssetPublishActions } from '@/components/curator/asset-publish-actions';
 import { EvidenceDeskActions } from '@/components/curator/evidence-desk-actions';
 import { SourceMatrix, sourceFromEvidence, type MatrixSource } from '@/components/curator/source-matrix';
@@ -61,7 +62,8 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
     ...verified.map(sourceFromEvidence),
   ];
   const manySources = matrixSources.length > 2;
-  const restricted = submission.consent === 'private';
+  // Restricted unless consent names a level that permits publication (MCP-E2).
+  const restricted = !isQuotable(submission.consent);
 
   return (
     <main className="case-page">

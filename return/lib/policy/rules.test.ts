@@ -152,3 +152,20 @@ test('65 a refused registration reaches a curator rather than stopping',()=>{
   assert.equal(r.escalate,true);
 });
 check('66 a human curator may register from submitted material',{...base,actor:'curator_ui',action:'register_object',refs:[submitted]},'pending_approval','HIGH');
+
+/* MCP-E4 — citing nothing and citing only submitted material are different mistakes.
+   Both are refused, and each says which one happened. */
+test('67 a call that cites no evidence says so rather than blaming submitted material',()=>{
+  const r=verdict({...base,action:'publish_label',refs:[]});
+  assert.equal(r.outcome,'denied');
+  assert.equal(r.policy,'no_supporting_evidence');
+  assert.equal(r.escalate,true);
+  assert.match(r.reason,/cited none/);
+});
+test('68 citing submitted material still names the authority rule',()=>{
+  assert.equal(verdict({...base,action:'register_object',refs:[submitted]}).policy,'submitted_sole_authority');
+});
+test('69 a human curator citing nothing is not held to the agent evidence rule',()=>{
+  const r=verdict({...base,actor:'curator_ui',action:'publish_label',refs:[]});
+  assert.equal(r.outcome,'pending_approval');
+});

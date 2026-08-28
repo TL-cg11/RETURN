@@ -203,6 +203,14 @@
 ```
 - **내부 검토용 연표 초안**만 반환(공식 timeline 미변경, 미저장). 출력: `{draft_events[],gaps[],conflicts[],unanswered_questions[]}`.
 - `compare_evidence`와 **의도·출력이 다름**(연표 구성 vs 관점별 대조) → 분리 유지.
+- **구현 현황 (MCP-E7).** 배포된 툴은 인자를 `evidence_ids` 로 받는다. 이 인자는 선언·설명만
+  되어 있고 **읽히지 않아서**, 무엇을 인용하든 저장된 연표 전체가 돌아왔다. 지금은 인용한
+  증거에 근거한 사건만 남기고 `cited_evidence_ids` 와
+  `events_not_resting_on_cited_evidence` 를 함께 반환한다. **공백(gap)은 인용과 무관하게
+  전부 유지한다** — 아무도 인용하지 않았다는 이유로 미해결 연도를 빼면 완결된 역사처럼
+  읽히고, 그것이 이 기록이 절대 유도해서는 안 되는 독해다. 인용이 없으면 종전대로 전체를
+  반환하고 `note` 가 그렇다고 밝힌다. 해석되지 않는 id 는 `propose_label_update` 와 같은
+  검사를 거쳐 `invalid` 로 거부된다.
 
 ### 3.6 `compare_evidence` — LOW · read · **trust:untrusted**
 ```jsonc
@@ -240,6 +248,11 @@
 ```
 - annotations: **`readOnly:false`**, `destructive:false`, `idempotent:false`, `openWorld:false`. (기존 `draft_label`의 `readOnlyHint:true`는 draft를 **저장**하므로 계약 모순 → 수정.)
 - 내부 draft만 저장, 공식 미공개이므로 risk=LOW. 각 assertion ref≥1; `open_question`은 경계 evidence≥2 또는 명시적 gap record 참조.
+- **구현 현황 (MCP-E7).** 배포된 `draft_label` 은 저장하지 않는 read 툴이며 `evidence_ids` 를
+  받는다. 이 인자 역시 선언만 되고 읽히지 않아, 초안은 언제나 그 유물의 증거 전체에
+  근거했다. 지금은 인용이 있으면 그 증거만으로 assertion 을 만들고 `rests_on` 을 함께
+  반환하며, 제안 단계와 같은 인용 검사를 거친다 — 초안이 `propose_label_update` 가 거부할
+  id 를 통과시키지 않는다.
 
 ### 3.9 `request_clarification` — MEDIUM · write
 ```jsonc
@@ -324,7 +337,11 @@
 - `visibility` 는 건드리지 않는다. 첨부해도 `restricted` 로 남으며, 공개는 큐레이터의 행위다.
 - 이미 다른 기여에 붙은 id 는 매칭되지 않는다. 그래서 `attached` 가 `requested` 보다 작게 돌아올 수 있고,
   이것이 남의 기여에 파일을 밀어 넣지 못하게 하는 방식이다.
-- 응답: `attached` · `requested` · `total_on_contribution` · `visibility:"restricted"`.
+- **하나도 붙지 않으면 `invalid` + `field:"asset_ids"` 로 거부한다.** 종전에는 `attached:0` 을 담은 채
+  `applied` 로 답해서, 에이전트가 실패를 성공으로 읽었다 (MCP-E3).
+- 일부만 붙으면 `applied` 이되 **`omitted_asset_ids`** 로 실패한 id 를 이름으로 돌려준다.
+  `compare_evidence` 의 `omitted_evidence_ids` 와 같은 규약이다.
+- 응답: `attached` · `requested` · `total_on_contribution` · `visibility:"restricted"` · (해당 시) `omitted_asset_ids`.
 
 ### 3B.2 `list_object_assets` — LOW · read · Shared
 
@@ -367,6 +384,9 @@
 - 위험 등급 **HIGH**. 새 유물은 공식 기록을 만드는 행위이므로 `publish_label` 과 같은 칸에 선다
 - 검증된 근거가 있으면 `pending_approval` + 제안이 큐에 남고, 응답은 `created:false` 를 명시한다
 - submitted 자료만 인용하면 `submitted_sole_authority` 로 거부하고 escalation 을 만든다
+- **아무 증거도 인용하지 않으면 `no_supporting_evidence`** 로 거부한다. 인용이 0건인 호출에
+  "제출된 증거는 단독 권위가 될 수 없다" 고 답하는 것은 사실이 아니고, 호출자를 있지도 않은
+  인용을 고치러 보낸다 (MCP-E4)
 - 제안은 **approval 이 아니라 escalation 큐**에 들어간다. approval 계약(A4)은 불변 라벨
   스냅샷이고 제안된 기록은 그 형태가 아니다. escalation 은 이미 tool·args·큐레이터 조치를 담는다
 - 실제 생성은 `POST /api/curator/objects` 가 하며, `confirmed: true` 없이는 409 로 거부한다.

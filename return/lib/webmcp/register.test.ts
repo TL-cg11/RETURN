@@ -200,6 +200,26 @@ test('registration is a no-op when the browser exposes no model context', () => 
   (globalThis as { document?: unknown }).document = previous;
 });
 
+/* MCP-E8 — a no-op is the right behaviour and silence is not. Whoever is looking for
+   the tools should be able to tell "this browser has no host API" from "registration
+   failed", and the console is where they look. */
+test('a browser with no model context says so instead of failing silently', () => {
+  const globals = globalThis as { document?: unknown };
+  const previousDocument = globals.document;
+  const previousWarn = console.warn;
+  const warnings: string[] = [];
+  globals.document = {};
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
+  try {
+    registerWebMcpTools('curator');
+    assert.ok(warnings.some((line) => /modelContext/.test(line) && /no WebMCP tool was registered/i.test(line)), warnings.join(" | "));
+    assert.ok(warnings.some((line) => line.includes('/api/tools/')), 'it should name the path that still works');
+  } finally {
+    globals.document = previousDocument;
+    console.warn = previousWarn;
+  }
+});
+
 /* G1 — the spec moved the getter from Navigator to Document, but a browser on the
    older shape must still work. */
 /**

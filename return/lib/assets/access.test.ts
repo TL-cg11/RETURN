@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ASSET_KINDS, assetAccess, isAllowedUpload, MAX_ASSET_BYTES, MAX_ASSETS_PER_CONTRIBUTION } from './access.ts';
 import type { AssetLike } from './access.ts';
+import { isQuotable } from '../domain/types.ts';
 
 const asset = (over: Partial<AssetLike> = {}): AssetLike =>
   ({ museumId: 'museum_demo_01', visibility: 'public', consent: 'public_attributed', ...over });
@@ -67,5 +68,24 @@ test('every allowed media type maps to a declared asset kind', () => {
   for (const type of ['image/jpeg', 'image/png', 'image/webp', 'application/pdf', 'audio/mpeg']) {
     const allowed = isAllowedUpload(type, 10);
     assert.ok(allowed && ASSET_KINDS.includes(allowed.kind));
+  }
+});
+
+/* MCP-E2 — consent is a permission that must be present, not the absence of `private`.
+   A value this system never defined (a typo, a level from a schema that has not shipped,
+   a string an agent invented and an unvalidated write stored) used to satisfy
+   `consent !== 'private'` and open the file to the public. */
+test('an unrecognised consent level is not served publicly', () => {
+  const rogue = asset({ consent: 'community_only' as AssetLike['consent'] });
+  assert.equal(assetAccess(rogue, { role: 'community', museumId: 'museum_demo_01' }), 'deny');
+  assert.equal(assetAccess(rogue, { role: 'curator', museumId: 'museum_demo_01' }), 'serve',
+    'a curator may still study it; only public display is withheld');
+});
+test('isQuotable names the two levels that permit publication', () => {
+  assert.equal(isQuotable('public_attributed'), true);
+  assert.equal(isQuotable('public_anonymous'), true);
+  assert.equal(isQuotable('private'), false);
+  for (const value of ['community_only', 'research_only', '', undefined, null, 'PUBLIC_ATTRIBUTED']) {
+    assert.equal(isQuotable(value), false, `${String(value)} is not a consent level this system granted`);
   }
 });

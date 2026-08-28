@@ -303,13 +303,16 @@ D1에서는 배열과 구조화 snapshot을 JSON 문자열로 저장한다.
 11. evidence 삭제와 실제 소장품 반환은 agent tool로 제공하지 않는다.
 12. 실제 반환 상태는 object에 저장하지 않고 인간 review 절차로만 다룬다.
 13. 자산은 `restricted` · `private` 로 생성되며, 큐레이터가 열기 전에는 어떤 경로로도 공개되지 않는다.
-14. `visibility` 가 `public` 이어도 `consent` 가 `private` 이면 자산은 공개 표시되지 않는다. 두 게이트는 독립이다.
+14. `visibility` 가 `public` 이어도 **consent 가 공개를 허용하지 않으면** 자산은 공개 표시되지 않는다. 두 게이트는 독립이다.
+14a. consent 판정은 **허가의 존재**로 한다 — `public_anonymous` · `public_attributed` 두 값을 지목하며, `!== 'private'` 로 쓰지 않는다. 정의되지 않은 값은 공개를 허용하지 않는 값으로 읽는다 (MCP-E2).
+14b. 기여 생성 경로는 정의되지 않은 consent 값을 **저장하지도, 조용히 다른 값으로 바꾸지도 않는다.** 값이 없으면 `private`, 정의되지 않은 값이면 `invalid` 로 거부한다 (MCP-E1).
 15. `sealed` 자산은 존재 자체를 숨긴다. 공개 경로는 403이 아니라 404로 답한다.
 16. 공개 유물 페이지는 `consent IN ('public_attributed','public_anonymous')` 인 기여만 조회한다. 렌더링이 아니라 SQL 에서 거른다.
 17. `public_anonymous` 기여는 본문은 공개하되 기여자 이름을 표기하지 않는다.
 18. 새 유물은 `objects` 와 revision 1 `label_publications` 를 한 트랜잭션으로 만든다. 라벨 없는 유물은 존재하지 않는다.
 19. `objects.id` 와 `accession_number` 는 워크스페이스 안에서 유일하다. 충돌하면 등록을 거부한다.
 20. 큐레이터의 질문은 `submissions.clarifications` 에 목록으로 남는다. 활동 로그가 아니라 여기가 기여자에게 보이는 원본이다.
+21. 모든 유물은 verified evidence 를 최소 1건 보유한다. 게이트웨이가 공식 변경에 verified 인용을 요구하므로, 이것이 없는 유물은 어떤 라벨 개정도 승인 큐에 도달할 수 없다 (MCP-E6).
 21. 자산 요청의 `?download=1` 은 `content-disposition` 만 바꾼다. 접근 판정은 동일하다.
 
 ### 5.1 `assets` — 기여·기록 자산

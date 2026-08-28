@@ -711,6 +711,92 @@ async function main() {
   const newDetail = await tool('get_object_detail', { object_id: slug });
   check('the new record is visible to a community agent too', newDetail.status === 200 && !!newDetail.json?.object?.label, `status ${newDetail.status}`);
 
+  /* ---------- 12. the WebMCP review findings (MCP_ERROR.md) ---------- */
+  // These run last and in a workspace of their own, because the citation checks need to
+  // know exactly which evidence exists.
+  section('review findings');
+  await post('/api/reset');
+  await setRole('community');
+
+  /* MCP-E1 — consent is validated at the door rather than stored verbatim. */
+  const rogueConsent = await tool('submit_evidence', { object_id: 'moonbird-mask', title: 'Rogue consent', description: 'x', consent: 'community_only' });
+  check('an undefined consent level is refused', rogueConsent.json?.outcome === 'invalid' && rogueConsent.json?.field === 'consent', JSON.stringify(rogueConsent.json));
+  check('the refusal names the levels that exist', /private.*public_anonymous.*public_attributed/.test(rogueConsent.json?.reason ?? ''), rogueConsent.json?.reason);
+  const noConsent = await tool('submit_evidence', { object_id: 'moonbird-mask', title: 'Consent omitted', description: 'x' });
+  check('an omitted consent still defaults to private', noConsent.json?.outcome === 'applied', JSON.stringify(noConsent.json));
+  const goodConsent = await tool('submit_evidence', { object_id: 'moonbird-mask', title: 'Consent given', description: 'x', consent: 'public_attributed' });
+  check('a declared consent level is accepted', goodConsent.json?.outcome === 'applied', JSON.stringify(goodConsent.json));
+  const rogueForm = await post('/api/community/evidence', {
+    objectId: 'moonbird-mask', title: 'Rogue consent through the form', kinds: ['Object information'],
+    details: [{ kind: 'Object information', values: { claim: 'A claim' } }], consent: 'community_only',
+  });
+  check('the contribution form refuses it too rather than rewriting it', rogueForm.status === 400 && rogueForm.json?.field === 'consent', `status ${rogueForm.status}`);
+
+  /* MCP-E2 — consent is read as a permission, so the private default is not quotable. */
+  await setRole('curator');
+  const reviewListed = await tool('list_submissions', { limit: 50 });
+  const privateRow = reviewListed.json?.submissions?.find((row) => row.id === noConsent.json?.submission_id);
+  check('a private contribution is not marked quotable', privateRow?.quotable === false, JSON.stringify(privateRow));
+  const privateCase = await tool('get_review_case', { case_id: noConsent.json?.submission_id });
+  check('a private contribution withholds its body from the case', privateCase.json?.submitted?.description === null);
+  check('a private contribution carries its consent restriction', (privateCase.json?.consent_restrictions ?? []).length === 1);
+  const openRow = reviewListed.json?.submissions?.find((row) => row.id === goodConsent.json?.submission_id);
+  check('a publicly consented contribution stays quotable', openRow?.quotable === true, JSON.stringify(openRow));
+
+  /* MCP-E3 — attaching nothing is not a success. */
+  await setRole('community');
+  const mcpAttachNothing = await tool('attach_assets', { submission_id: goodConsent.json?.submission_id, asset_ids: ['AST-NOT-A-REAL-ID'] });
+  check('attaching an unknown asset is refused, not applied', mcpAttachNothing.json?.outcome === 'invalid' && mcpAttachNothing.json?.field === 'asset_ids', JSON.stringify(mcpAttachNothing.json));
+  check('the refusal names the id that did not resolve', (mcpAttachNothing.json?.omitted_asset_ids ?? []).includes('AST-NOT-A-REAL-ID'));
+  const realUpload = await upload('image/png', 'attach-probe.png');
+  const attachPartly = await tool('attach_assets', { submission_id: goodConsent.json?.submission_id, asset_ids: [realUpload.json?.id, 'AST-NOT-A-REAL-ID'] });
+  check('a partial attach applies and names what it dropped', attachPartly.json?.outcome === 'applied' && attachPartly.json?.attached === 1 && (attachPartly.json?.omitted_asset_ids ?? []).length === 1, JSON.stringify(attachPartly.json));
+
+  /* MCP-E4 — citing nothing and citing only submitted material read differently. */
+  await setRole('curator');
+  const citesNothing = await tool('open_return_review', { object_id: 'moonbird-mask', basis: 'No citation given' });
+  check('a HIGH call citing nothing says it cited nothing', citesNothing.json?.policy === 'no_supporting_evidence', JSON.stringify(citesNothing.json?.policy));
+  const citesSubmitted = await tool('open_return_review', { object_id: 'moonbird-mask', basis: 'Community memory', evidence_ids: ['EV-059'] });
+  check('a HIGH call citing submitted material still names the authority rule', citesSubmitted.json?.policy === 'submitted_sole_authority', JSON.stringify(citesSubmitted.json?.policy));
+
+  /* MCP-E5 — an unresolved citation is an input problem, not a workspace problem. */
+  const citesUnknown = await tool('propose_label_update', { object_id: 'moonbird-mask', draft: 'x', evidence_ids: ['EV-NOT-A-REAL-ID'] });
+  check('an unknown evidence id is invalid input, not a workspace mismatch', citesUnknown.json?.outcome === 'invalid' && citesUnknown.json?.field === 'evidence_ids', JSON.stringify(citesUnknown.json));
+  check('the refusal names the id rather than the workspace', (citesUnknown.json?.reason ?? '').includes('EV-NOT-A-REAL-ID') && !/belongs to another workspace/i.test(citesUnknown.json?.reason ?? ''), citesUnknown.json?.reason);
+  const citesOtherObject = await tool('propose_label_update', { object_id: 'tide-listening-stone', draft: 'x', evidence_ids: ['EV-068'] });
+  check('evidence about another object is refused as such', citesOtherObject.json?.outcome === 'invalid' && /different object/.test(citesOtherObject.json?.reason ?? ''), citesOtherObject.json?.reason);
+
+  /* MCP-E6 — every object holds a verified record, so no object is locked out. */
+  const OBJECT_EVIDENCE = {
+    'moonbird-mask': 'EV-068', 'riverstone-vessel': 'EV-ACC-1912', 'woven-signal-cloth': 'EV-ACC-1952',
+    'tide-listening-stone': 'EV-ACC-1888', 'reed-memory-box': 'EV-ACC-1934', 'four-winds-bowl': 'EV-ACC-1904',
+    'dawn-marker': 'EV-ACC-1962', 'harbor-thread-map': 'EV-ACC-1951',
+  };
+  for (const [objectId, evidenceId] of Object.entries(OBJECT_EVIDENCE)) {
+    const mcpProposal = await tool('propose_label_update', { object_id: objectId, draft: `Working draft for ${objectId}.`, evidence_ids: [evidenceId] });
+    check(`${objectId} can reach human approval on its own verified record`, mcpProposal.json?.outcome === 'pending_approval' && !!mcpProposal.json?.approval_id, JSON.stringify(mcpProposal.json));
+  }
+
+  /* MCP-E7 — a declared parameter changes the answer. */
+  const wholeTimeline = await tool('build_provenance_timeline', { object_id: 'moonbird-mask' });
+  const citedTimeline = await tool('build_provenance_timeline', { object_id: 'moonbird-mask', evidence_ids: ['EV-059'] });
+  check('a cited timeline is narrower than the whole recorded one', citedTimeline.json?.events?.length < wholeTimeline.json?.events?.length, `${citedTimeline.json?.events?.length} of ${wholeTimeline.json?.events?.length}`);
+  check('a cited timeline names what it rested on', (citedTimeline.json?.cited_evidence_ids ?? []).includes('EV-059'));
+  check('a cited timeline still lists every gap', citedTimeline.json?.gaps?.length === wholeTimeline.json?.gaps?.length, 'a working timeline must not read as a complete history');
+  const wholeDraft = await tool('draft_label', { object_id: 'moonbird-mask' });
+  const citedDraft = await tool('draft_label', { object_id: 'moonbird-mask', evidence_ids: ['EV-068'] });
+  check('a draft rests on the evidence it was given', citedDraft.json?.assertions?.length < wholeDraft.json?.assertions?.length, `${citedDraft.json?.assertions?.length} of ${wholeDraft.json?.assertions?.length}`);
+  check('a draft refuses a citation a proposal would refuse', (await tool('draft_label', { object_id: 'moonbird-mask', evidence_ids: ['EV-ACC-1912'] })).json?.outcome === 'invalid');
+
+  // B1 in the review report — one write call leaves one record. The report saw pairs; the
+  // handler inserts once, and this pins that down wherever the suite is pointed.
+  await setRole('community');
+  const beforeWrite = await (async () => { await setRole('curator'); const rows = await tool('list_submissions', { limit: 100 }); await setRole('community'); return rows.json?.count ?? 0; })();
+  await tool('submit_evidence', { object_id: 'moonbird-mask', title: 'Single write probe', description: 'x', consent: 'public_anonymous' });
+  await setRole('curator');
+  const afterWrite = await tool('list_submissions', { limit: 100 });
+  check('one contribution call leaves exactly one contribution', (afterWrite.json?.count ?? 0) - beforeWrite === 1, `${beforeWrite} → ${afterWrite.json?.count}`);
+  await setRole('community');
   /* ---------- report ---------- */
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${'-'.repeat(60)}`);

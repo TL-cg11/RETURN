@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { isQuotable } from '@/lib/domain/types';
 
 type Asset = { id: string; file_name: string; kind: string; visibility: string; consent: string; alt_text: string };
 
@@ -41,7 +42,7 @@ export function AssetPublishActions({ assets }: { assets: Asset[] }) {
     <div className="asset-publish">
       <ul>
         {assets.map((asset) => {
-          const publishable = asset.consent !== 'private';
+          const publishable = isQuotable(asset.consent);
           const isPublic = asset.visibility === 'public';
           return (
             <li key={asset.id}>

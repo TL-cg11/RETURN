@@ -2,6 +2,7 @@ import { attachAssetsToSubmission, recordActivity } from '@/db/queries';
 import { ensureDatabase } from '@/db/setup';
 import { CONTRIBUTION_KINDS, describeKinds, fieldsFor, missingFields, type ContributionKind, type KindDetail } from '@/lib/community/contribution';
 import { MAX_ASSETS_PER_CONTRIBUTION } from '@/lib/assets/access';
+import { CONSENT_LEVELS, isConsent, type Consent } from '@/lib/domain/types';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
 import { findObject } from '@/lib/records';
 import { sessionFromRequest } from '@/lib/session';
@@ -18,7 +19,7 @@ type Body = {
   requestedOutcome?: string;
 };
 
-const CONSENTS = ['private', 'public_anonymous', 'public_attributed'];
+
 
 /** Keeps only declared kinds and declared field names, in the order the form offers them. */
 function readDetails(body: Body): KindDetail[] {
@@ -72,7 +73,12 @@ export async function POST(request: Request) {
     return Response.json({ outcome: 'invalid', field: 'details', reason: `${missing[0].kind}: ${missing[0].label} is required.`, recovery: 'Complete the highlighted step.' }, { status: 400 });
   }
 
-  const consent = CONSENTS.includes(body.consent ?? '') ? body.consent! : 'private';
+  // Same rule as the agent tool (MCP-E1). An absent value is the private default; a
+  // value this system never defined is refused rather than quietly turned into one.
+  if (body.consent !== undefined && body.consent !== '' && !isConsent(body.consent)) {
+    return Response.json({ outcome: 'invalid', field: 'consent', reason: `Consent must be one of ${CONSENT_LEVELS.join(', ')}.`, recovery: 'Choose a consent level on the consent step.' }, { status: 400 });
+  }
+  const consent: Consent = isConsent(body.consent) ? body.consent : 'private';
   const assetIds = (body.assetIds ?? []).filter((value) => typeof value === 'string').slice(0, MAX_ASSETS_PER_CONTRIBUTION);
   const kinds = details.map((detail) => detail.kind) as ContributionKind[];
 

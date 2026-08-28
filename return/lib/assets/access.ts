@@ -1,4 +1,5 @@
-import type { Consent, Visibility } from '../domain/types';
+import type { Consent, Visibility } from '../domain/types.ts';
+import { isQuotable } from '../domain/types.ts';
 import type { Role } from '../session-cookie';
 
 export const ASSET_KINDS = ['image', 'document', 'audio'] as const;
@@ -42,12 +43,17 @@ export type AssetAccess = 'serve' | 'deny' | 'absent';
  *
  * Tenancy is judged first, so a curator of another museum learns nothing about
  * this one's restricted material. Consent is judged alongside visibility because
- * §5.2 makes public display conditional on consent: `private` material may be
+ * §5.2 makes public display conditional on consent: non-public material may be
  * studied internally but never displayed, even if the record itself is public.
+ *
+ * Consent is read as a permission that has to be present, not as an absence of
+ * `private` (MCP-E2). Serving on `consent !== 'private'` meant any value this system
+ * did not define — a typo, a level from a future schema, a string an agent invented —
+ * opened the file to the public. The two levels that permit publication are named.
  */
 export function assetAccess(asset: AssetLike, session: { role: Role; museumId: string }): AssetAccess {
   if (asset.museumId !== session.museumId) return 'absent';
   if (asset.visibility === 'sealed') return 'absent';
-  if (asset.visibility === 'public' && asset.consent !== 'private') return 'serve';
+  if (asset.visibility === 'public' && isQuotable(asset.consent)) return 'serve';
   return session.role === 'curator' ? 'serve' : 'deny';
 }

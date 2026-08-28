@@ -104,12 +104,38 @@ async function ensureLegacyColumns(d1: D1Database) {
   ]);
 }
 
+/**
+ * Put the seed's evidence into workspaces that were created before it existed (MCP-E6).
+ *
+ * `seedWorkspace` runs once, when a workspace has no objects, so a record added to the
+ * seed afterwards never reaches a workspace already in use — including the deployed demo.
+ * Every object but the Moonbird Mask held no evidence at all, and the gateway requires a
+ * verified citation for any official change, so those records could not reach human
+ * approval; seeding alone would have fixed that for new workspaces and left the one
+ * people actually look at untouched.
+ *
+ * Written as one INSERT per seed record across every workspace that holds the object.
+ * `INSERT OR IGNORE` against the (museum_id, id) primary key makes it idempotent, so this
+ * adds what is missing and touches nothing that is already there — including a record a
+ * curator has since edited.
+ */
+async function backfillSeedEvidence(d1: D1Database) {
+  const { evidence } = buildSeedDataset('museum_template');
+  await d1.batch(evidence.map((item) => d1.prepare(
+    'INSERT OR IGNORE INTO evidence (id,museum_id,object_id,type,title,body,source_name,source_relationship,date_or_period,place,authority,consent,visibility,submitted_by,verified_by,verified_at,created_at,updated_at)'
+    + ' SELECT ?,o.museum_id,o.id,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? FROM objects o WHERE o.id=?',
+  ).bind(item.id, item.type, item.title, item.body, item.sourceName, item.sourceRelationship, item.date, item.place,
+    item.authority, item.consent, item.visibility, item.submittedBy, item.verifiedBy ?? null, item.verifiedAt,
+    item.createdAt, item.updatedAt, item.objectId)));
+}
+
 let schemaReady: Promise<void> | undefined;
 
 async function ensureSchema(d1: D1Database) {
   schemaReady ??= (async () => {
     await createTables(d1);
     await ensureLegacyColumns(d1);
+    await backfillSeedEvidence(d1);
   })().catch((error) => {
     schemaReady = undefined;
     throw error;

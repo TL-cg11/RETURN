@@ -26,6 +26,11 @@ export function evaluatePolicy(input:PolicyInput):PolicyResult {
   const refs=input.refs??[];
   if(input.publicOutput&&refs.some((ref)=>ref.visibility!=='public'))return{outcome:'denied',risk,policy:'visibility_restricted',reason:'Restricted or sealed material cannot appear in public output.',recovery:'Remove the restricted reference or request an access review.'};
   if(input.publicOutput&&refs.some((ref)=>ref.consent==='private'))return{outcome:'denied',risk,policy:'consent_not_public',reason:'The evidence consent does not permit public quotation.',recovery:'Use it for internal research only, or request updated consent.'};
+  // Citing nothing and citing only submitted material are different mistakes, and were
+  // answered with the same sentence (MCP-E4). "Submitted evidence cannot be the sole
+  // authority" is false when the call named no evidence at all, and it sends the caller
+  // looking for a verified counterpart to a citation it never made.
+  if(risk==='HIGH'&&actorTypeOf(input.actor)==='agent'&&refs.length===0)return{outcome:'denied',risk,policy:'no_supporting_evidence',escalate:true,reason:'An official change must cite evidence, and this call cited none.',recovery:'Pass evidence_ids naming at least one verified record, or escalate the gap to curator review.'};
   if(risk==='HIGH'&&actorTypeOf(input.actor)==='agent'&&!refs.some((ref)=>ref.authority==='verified'))return{outcome:'denied',risk,policy:'submitted_sole_authority',escalate:true,reason:'Submitted evidence cannot be the sole authority for an official change.',recovery:'Compare a verified source or escalate the gap to curator review.'};
   if(input.assertions?.some((a)=>a.refIndexes.length===0))return{outcome:'invalid',risk,policy:'assertion_unsupported',reason:'Every public assertion must cite at least one evidence record.',recovery:'Add evidence refs or remove the unsupported assertion.'};
   if(input.assertions?.some((a)=>a.mode==='verified_fact'&&a.refIndexes.every((i)=>refs[i]?.authority!=='verified')))return{outcome:'invalid',risk,policy:'assertion_not_verified',reason:'A verified fact must reference verified evidence.',recovery:'Change the assertion mode or attach a verified reference.'};

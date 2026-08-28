@@ -6,7 +6,7 @@ import {
 } from '@/db/queries';
 import { APPROVAL_TTL_MS, ensureDatabase, sha256 } from '@/db/setup';
 import { buildLabelApprovalSnapshot, canonicalJson } from '@/lib/approval-snapshot';
-import type { Authority, Consent, EvidenceRecord, LabelAssertion, Visibility } from '@/lib/domain/types';
+import { CONSENT_LEVELS, isConsent, isQuotable, type Authority, type Consent, type EvidenceRecord, type LabelAssertion, type Visibility } from '@/lib/domain/types';
 import { assetAccess, MAX_ASSETS_PER_CONTRIBUTION } from '@/lib/assets/access';
 import { slugFor } from '@/lib/community/object-input';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
@@ -72,14 +72,15 @@ function publicAsset(row: AssetRow) {
   return {
     id: row.id, kind: row.kind, file_name: row.file_name, media_type: row.content_type,
     alt_text: row.alt_text, caption: row.caption, byte_size: row.byte_size, width: row.width, height: row.height,
-    consent: row.consent, visibility: row.visibility, quotable: row.consent !== 'private',
+    consent: row.consent, visibility: row.visibility, quotable: isQuotable(row.consent),
     url: `/api/assets/${row.id}`, created_at: row.created_at,
   };
 }
 
 /** Public shape of a submission. Bodies of restricted material are withheld. */
 function publicSubmission(row: SubmissionRow) {
-  const withheld = row.consent === 'private';
+  // Withheld unless consent names a level that permits publication (MCP-E2).
+  const withheld = !isQuotable(row.consent);
   return {
     id: row.id, object_id: row.object_id, kind: row.kind, title: row.title,
     contributor: row.source, consent: row.consent, status: row.status,
@@ -96,7 +97,8 @@ function publicSubmission(row: SubmissionRow) {
  * what the catalogue means by returning ids and summaries rather than text.
  */
 function listedSubmission(row: SubmissionRow) {
-  const withheld = row.consent === 'private';
+  // Withheld unless consent names a level that permits publication (MCP-E2).
+  const withheld = !isQuotable(row.consent);
   return {
     id: row.id, object_id: row.object_id, kind: row.kind, title: row.title,
     consent: row.consent, status: row.status, quotable: !withheld,
@@ -104,10 +106,20 @@ function listedSubmission(row: SubmissionRow) {
   };
 }
 
+/**
+ * Resolve the evidence ids a call cites, and say which ones did not resolve.
+ *
+ * Policy enforcement may inspect sealed metadata, but sealed records are never returned
+ * to the agent, so an id that resolves to nothing fails closed as sealed and private.
+ *
+ * This used to report an unresolved id as `museumMatch: false`, and the gateway answered
+ * "The requested record belongs to another workspace" (MCP-E5). The workspace was never
+ * in question: the object had already been resolved from it. What had gone wrong was the
+ * citation — an id that does not exist here, or one that belongs to a different object.
+ * Those are input problems and are reported as input problems, by id.
+ */
 async function refsFrom(museumId: string, args: Record<string, unknown>, objectId: string) {
   const ids = Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [];
-  // Policy enforcement may inspect sealed metadata, but sealed records are never
-  // returned to the agent. Unknown/cross-object ids fail closed as sealed/private.
   const known = await getEvidenceByIds(museumId, ids, 'curator');
   const refs = ids.map((id) => {
     const found = known.find((item) => item.id === id && item.objectId === objectId);
@@ -119,8 +131,31 @@ async function refsFrom(museumId: string, args: Record<string, unknown>, objectI
   });
   return {
     refs,
-    museumMatch: ids.every((id) => known.some((item) => item.id === id && item.objectId === objectId)),
+    /** Cited ids that name no evidence record in this workspace. */
+    unknown: ids.filter((id) => !known.some((item) => item.id === id)),
+    /** Cited ids that exist here but document a different object. */
+    otherObject: ids.filter((id) => known.some((item) => item.id === id && item.objectId !== objectId)),
   };
+}
+
+/**
+ * The refusal for a citation that did not resolve, or null when every id landed.
+ *
+ * An official change may only rest on evidence recorded against the object it changes,
+ * which is the rule that was already in force. It is stated here instead of being
+ * delivered as a workspace error.
+ */
+function citationProblem(resolved: { unknown: string[]; otherObject: string[] }, objectId: string) {
+  if (resolved.unknown.length > 0) {
+    return invalid('evidence_ids', `No evidence record exists in this workspace for ${resolved.unknown.join(', ')}.`,
+      'Call compare_evidence or get_review_case to see the evidence ids on this object, then cite those.');
+  }
+  if (resolved.otherObject.length > 0) {
+    const one = resolved.otherObject.length === 1;
+    return invalid('evidence_ids', `${resolved.otherObject.join(', ')} ${one ? 'documents' : 'document'} a different object, so ${one ? 'it cannot' : 'they cannot'} authorise a change to ${objectId}.`,
+      'Cite evidence recorded against this object, or open a separate proposal for the object the evidence documents.');
+  }
+  return null;
 }
 
 /**
@@ -211,10 +246,37 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
         unanswered_questions: record.questions,
       };
       if (name === 'get_provenance_timeline') return Response.json(body);
+
+      // The catalogue promises a timeline built *from cited evidence* (MCP-E7). The
+      // parameter was declared, described, and then ignored — every call returned the
+      // stored timeline whole, so an agent narrowing to two sources got the same answer
+      // as one that cited nothing and had no way to tell.
+      const cited = await refsFrom(museumId, args, record.id);
+      const citedIds = Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [];
+      if (citedIds.length === 0) {
+        return Response.json({
+          ...body,
+          note: 'Working timeline only. The official record is unchanged. No evidence was cited, so this is the whole recorded timeline.',
+          ...evaluatePolicy({ actor: role, action: 'draft_label', museumMatch: true }),
+        });
+      }
+      const citation = citationProblem(cited, record.id);
+      if (citation) return citation;
+      const resting = record.timeline.filter((event) => event.evidenceRefs.some((ref) => citedIds.includes(ref)));
       return Response.json({
-        ...body,
-        note: 'Working timeline only. The official record is unchanged.',
-        ...evaluatePolicy({ actor: role, action: 'draft_label', museumMatch: record.id === objectId }),
+        object_id: record.id,
+        cited_evidence_ids: citedIds,
+        events: resting,
+        // Gaps survive the filter. A working timeline that drops the unresolved years
+        // because no one cited them reads as a complete history, which is the one
+        // reading this record must never invite.
+        gaps: body.gaps,
+        unanswered_questions: record.questions,
+        events_not_resting_on_cited_evidence: record.timeline.length - resting.length,
+        note: resting.length > 0
+          ? 'Working timeline from the cited evidence only. Gaps are listed in full regardless of what was cited. The official record is unchanged.'
+          : 'No recorded event rests on the cited evidence. Gaps are listed in full. The official record is unchanged.',
+        ...evaluatePolicy({ actor: role, action: 'draft_label', museumMatch: true }),
       });
     }
 
@@ -227,6 +289,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       const title = typeof args.title === 'string' && args.title.trim() ? args.title.trim() : claim.slice(0, 80);
       if (!title) return invalid(name === 'submit_evidence' ? 'title' : 'claim', 'A contribution needs a short title or claim.', 'Describe the material in one line.');
 
+      // MCP-E1 — an unrecognised consent level used to be stored verbatim and then read
+      // back as quotable by every consumer downstream. Consent is the one field on a
+      // contribution that decides what may be published, so it is refused at the door
+      // rather than coerced: silently rewriting someone's answer is its own failure.
+      if (args.consent !== undefined && args.consent !== null && args.consent !== '' && !isConsent(args.consent)) {
+        return invalid('consent', `Consent must be one of ${CONSENT_LEVELS.join(', ')}.`, 'Ask the contributor which of the three levels applies, then resubmit.');
+      }
+      const consent: Consent = isConsent(args.consent) ? args.consent : 'private';
+
       const policy = evaluatePolicy({ actor: role, action: 'submit_evidence', museumMatch: record.id === objectId });
       const id = `SUB-${crypto.randomUUID().slice(0, 12).toUpperCase()}`;
       const db = await ensureDatabase(museumId);
@@ -234,7 +305,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       await db.prepare('INSERT INTO submissions (id,museum_id,object_id,kind,title,description,source,consent,requested_outcome,contributor_name,contributor_role,evidence_refs,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
         .bind(id, museumId, record.id, name === 'submit_evidence' ? 'Evidence' : 'Context claim', title,
           String(args.description ?? args.claim ?? ''), String(args.source ?? 'Community agent'),
-          typeof args.consent === 'string' ? args.consent : 'private',
+          consent,
           String(args.requested_outcome ?? 'Add context'), String(args.source ?? 'Community agent'), role,
           JSON.stringify(Array.isArray(args.evidence_refs) ? args.evidence_refs.map(String) : []), 'received', createdAt, createdAt).run();
       await recordActivity(museumId, 'Community Agent', 'submitted new evidence', title, {
@@ -346,7 +417,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
           ? ['The current label implies clear prior custody, but the 1968 invoice names no prior owner.']
           : ['No verified counterpart is on file for this object yet.'],
         open_questions: record?.questions ?? [],
-        consent_restrictions: row.consent === 'private'
+        consent_restrictions: !isQuotable(row.consent)
           ? ['This material may inform review but cannot be quoted in public output.'] : [],
         untrusted_content: true,
       });
@@ -355,9 +426,21 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
     case 'draft_label': {
       const record = await objectRecord(museumId, objectId, 'agent');
       if (!record) return invalid(...NO_OBJECT);
-      const evidence = await evidenceFor(museumId, record.id, 'agent');
+      const all = await evidenceFor(museumId, record.id, 'agent');
+      // `evidence_ids` was declared as "evidence each drafted assertion should rest on"
+      // and then ignored: the draft always rested on everything on the object (MCP-E7).
+      // An agent narrowing to the sources it trusts now gets a draft that reflects that,
+      // and the same citation rules as a proposal, so a draft cannot pass through ids
+      // that propose_label_update would refuse.
+      const citedIds = Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [];
+      if (citedIds.length > 0) {
+        const citation = citationProblem(await refsFrom(museumId, args, record.id), record.id);
+        if (citation) return citation;
+      }
+      const evidence = citedIds.length > 0 ? all.filter((item) => citedIds.includes(item.id)) : all;
       return Response.json({
         object_id: record.id,
+        ...(citedIds.length > 0 ? { rests_on: citedIds } : {}),
         draft: record.gap
           ? `${record.title} is documented from ${record.date}. Its movement between ${record.gap} remains under joint research.`
           : `${record.title}, ${record.date}. ${record.material}.`,
@@ -397,7 +480,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       if (!draft) return invalid('draft', 'A proposal needs the label text it would publish.', 'Call draft_label first, then propose the text it returns.');
 
       const resolvedRefs = await refsFrom(museumId, args, record.id);
-      const policy = evaluatePolicy({ actor: role, action: 'publish_label', museumMatch: resolvedRefs.museumMatch, refs: resolvedRefs.refs, publicOutput: true });
+      const citation = citationProblem(resolvedRefs, record.id);
+      if (citation) return citation;
+      const policy = evaluatePolicy({ actor: role, action: 'publish_label', museumMatch: true, refs: resolvedRefs.refs, publicOutput: true });
       if (policy.outcome !== 'pending_approval') {
         return Response.json({
           ...policy, object_id: record.id, published: false,
@@ -443,7 +528,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       const record = await objectRecord(museumId, objectId, 'agent');
       if (!record) return invalid(...NO_OBJECT);
       const resolvedRefs = await refsFrom(museumId, args, record.id);
-      const policy = evaluatePolicy({ actor: role, action: 'open_return_review', museumMatch: resolvedRefs.museumMatch, refs: resolvedRefs.refs });
+      const citation = citationProblem(resolvedRefs, record.id);
+      if (citation) return citation;
+      const policy = evaluatePolicy({ actor: role, action: 'open_return_review', museumMatch: true, refs: resolvedRefs.refs });
       const basis = String(args.basis ?? 'no basis given');
       if (policy.outcome === 'pending_approval') {
         await recordActivity(museumId, 'Curator Agent', 'requested a stewardship review', `${record.title} · ${basis}`, {
@@ -536,12 +623,38 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       // contribution's consent. An id belonging to another contribution simply does
       // not match, so the returned count comes back lower than the ids supplied.
       const attached = await attachAssetsToSubmission(museumId, submission.id, ids, submission.consent, submission.object_id);
+      const held = await listSubmissionAssets(museumId, submission.id);
+      // Which of the supplied ids are actually on the contribution now. Read back from
+      // the contribution rather than trusted from the update count, so an id that was
+      // already attached here reads as attached and an id that never resolved reads as
+      // omitted (MCP-E3).
+      const omitted = ids.filter((id) => !held.some((asset) => asset.id === id));
+
+      // Nothing moved. `applied` here told an agent its files were on the contribution
+      // when no file was: the ids were unknown, already spoken for, or in another
+      // workspace. A refusal it can act on is worth more than a success it cannot.
+      if (omitted.length === ids.length) {
+        await recordActivity(museumId, 'Community Agent', 'tried to attach files to a contribution', 'none of ' + ids.length + ' resolved', {
+          tool: 'attach_assets', target: submission.id, risk: policy.risk, policyDecision: 'invalid', result: '0',
+        });
+        return Response.json({
+          outcome: 'invalid', field: 'asset_ids',
+          reason: ids.length === 1
+            ? 'That asset id is not available to attach: it does not exist in this workspace, or it is already attached to another contribution.'
+            : 'None of those asset ids are available to attach: they do not exist in this workspace, or they are already attached to other contributions.',
+          recovery: 'Upload the files first and use the ids the upload route returns, or call check_submission to see what this contribution already holds.',
+          submission_id: submission.id, attached: 0, requested: ids.length,
+          omitted_asset_ids: omitted, total_on_contribution: held.length,
+        }, { status: 400 });
+      }
+
       await recordActivity(museumId, 'Community Agent', 'attached files to a contribution', attached + ' of ' + ids.length, {
         tool: 'attach_assets', target: submission.id, risk: policy.risk, policyDecision: 'applied', result: String(attached),
       });
-      const held = await listSubmissionAssets(museumId, submission.id);
       return Response.json({
         ...policy, submission_id: submission.id, attached, requested: ids.length,
+        // Named, not silently dropped — the pattern compare_evidence already uses.
+        ...(omitted.length > 0 ? { omitted_asset_ids: omitted } : {}),
         total_on_contribution: held.length, visibility: 'restricted',
         note: 'Attached files stay restricted to curatorial review until a curator publishes them.',
       });

@@ -1,5 +1,21 @@
 export type Authority = 'submitted' | 'verified';
 export type Consent = 'private' | 'public_anonymous' | 'public_attributed';
+/**
+ * The consent levels, as data. Both contribution routes validate against this rather
+ * than each keeping its own list: an unrecognised level used to be stored verbatim on
+ * one path and silently rewritten to `private` on the other (MCP-E1).
+ */
+export const CONSENT_LEVELS: readonly Consent[] = ['private', 'public_anonymous', 'public_attributed'];
+/** Whether a stored value is a consent level this system defined. */
+export const isConsent = (value: unknown): value is Consent => typeof value === 'string' && (CONSENT_LEVELS as readonly string[]).includes(value);
+/**
+ * Whether consent permits quoting the material in public output.
+ *
+ * Named on the two levels that allow it, never as `!== 'private'`. A value that is
+ * neither is not a permission this system granted, and the safe reading of an
+ * unrecognised consent level is that it withholds (MCP-E2).
+ */
+export const isQuotable = (value: unknown): boolean => value === 'public_anonymous' || value === 'public_attributed';
 export type Visibility = 'public' | 'restricted' | 'sealed';
 export type AssertionMode = 'verified_fact' | 'attributed_claim' | 'open_question';
 

@@ -78,7 +78,14 @@ function specFor(tool: ToolSpec, signal: AbortSignal) {
  */
 export function registerWebMcpTools(role: 'community' | 'curator') {
   const { context, legacy } = resolveContext();
-  if (!context) return () => {};
+  if (!context) {
+    // A browser without the host API loses the tools, not the page. It used to lose them
+    // in silence, so a reader of this console had no way to tell a working registration
+    // from none at all (MCP-E8). The sidebar panel reports the same state on screen; this
+    // is for whoever is looking at the console instead.
+    console.warn('[RE:TURN] Neither document.modelContext nor navigator.modelContext is exposed by this browser, so no WebMCP tool was registered. The same tools stay reachable over POST /api/tools/<name>.');
+    return () => {};
+  }
   if (legacy) {
     console.warn('[RE:TURN] navigator.modelContext is deprecated; this browser should expose document.modelContext.');
   }
