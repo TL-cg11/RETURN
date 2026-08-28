@@ -3,7 +3,15 @@
 :root { --paper:#f3f0e8; --paper-light:#f9f7f2; --ink:#171b19; --muted:#64665f; --line:#cfcec6; --oxide:#a33e2f; --moss:#365a4b; }
 * { box-sizing:border-box; }
 html { scroll-behavior:smooth; }
-body { margin:0; background:var(--paper); color:var(--ink); font-family:var(--font-geist-sans),Arial,sans-serif; -webkit-font-smoothing:antialiased; }
+body { margin:0; background:var(--paper); color:var(--ink); font-family:var(--font-geist-sans),Arial,sans-serif; -webkit-font-smoothing:antialiased; overflow-wrap:anywhere; }
+/* One unbroken token used to drag the whole page sideways (V7-9). A 140-character title
+   with no spaces — inside the ceiling, so accepted — sized the grid track it sat in, and
+   the public object page measured 1,983px against a 1,265px viewport; the curator case
+   measured 44,349px. An 84-character archive URL pasted into a source field overflowed a
+   phone. `anywhere` rather than `break-word` because only `anywhere` lowers the
+   min-content contribution, and min-content is what a `1fr` track is sized from — with
+   `break-word` the text wraps and the column still blows out. Neither breaks a word that
+   fits, so ordinary prose reads exactly as before. */
 a { color:inherit; text-decoration:none; }
 
 .site-header { height:76px; display:flex; align-items:center; justify-content:space-between; padding:0 4.5vw; border-bottom:1px solid var(--line); background:color-mix(in srgb,var(--paper) 92%,transparent); backdrop-filter:blur(12px); position:sticky; top:0; z-index:10; }
@@ -170,6 +178,20 @@ a { color:inherit; text-decoration:none; }
 .contribution-form aside li.active { color:#fff; }.contribution-form aside li.active span { background:#fff; color:#27322c; border-color:#fff; }.contribution-form aside li.done span { background:#708b78; border-color:#708b78; color:#fff; }
 .privacy-note { margin-top:auto; padding-top:2rem; border-top:1px solid #526058; color:#adb6b0; font-size:.67rem; line-height:1.55; }
 .form-stage { width:min(740px,calc(100% - 4rem)); margin:0 auto; padding:5rem 0 3rem; }
+/* What a curator sees in place of the form (V7-12). Sized like the form stage so the
+   page does not change shape between the two, and laid out as two paths rather than one
+   refusal, because both of them are things the reader can actually do. */
+.curator-detour { width:min(880px,calc(100% - 4rem)); margin:0 auto; padding:5rem 0 4rem; }
+.curator-detour h1 { font:400 clamp(2.2rem,4vw,3.2rem)/1.05 Georgia,serif; letter-spacing:-.03em; margin:0 0 1.4rem; max-width:16ch; }
+.curator-detour-lede { max-width:60ch; margin:0 0 3rem; color:#4f514c; line-height:1.7; font-size:1rem; }
+.curator-detour-lede em { font-style:italic; }
+.curator-detour-paths { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:2.5rem; padding-top:2.2rem; border-top:1px solid var(--line); }
+.curator-detour-paths h2 { margin:0 0 .7rem; font:600 .68rem var(--font-geist-sans); text-transform:uppercase; letter-spacing:.08em; color:var(--moss); }
+.curator-detour-paths p { margin:0 0 1.4rem; color:#5b5d58; font-size:.83rem; line-height:1.65; }
+.curator-detour-paths .primary-action { font-size:.8rem; }
+.curator-detour-paths .text-action { background:none; border:0; border-bottom:1px solid #777; padding:0 0 .18rem; font:inherit; font-size:.83rem; color:inherit; cursor:pointer; }
+.curator-detour-paths .text-action:disabled { opacity:.55; cursor:default; }
+.curator-detour > .form-help { margin-top:3rem; }
 .form-count { font:600 .63rem var(--font-geist-mono); text-transform:uppercase; letter-spacing:.1em; color:var(--oxide); }
 .form-stage h1 { font:400 clamp(2.6rem,4.5vw,4.8rem)/1 Georgia,serif; letter-spacing:-.045em; margin:.7rem 0 3rem; }
 .selected-object { border-top:1px solid var(--ink); border-bottom:1px solid var(--line); display:grid; grid-template-columns:84px 1fr auto; align-items:center; gap:1.3rem; padding:1rem 0; }

@@ -1271,6 +1271,122 @@ async function main() {
   }
   check('every contribution field is held to its own ceiling', v7Uncapped.length === 0, v7Uncapped.join(' | '));
   await setRole('community');
+  /* ---------- 18. the deployed-verification findings (FIX_REQUEST_8.md) ---------- */
+  section('layout and contract');
+  await post('/api/reset');
+
+  /* V7-9 — a value inside the ceiling cannot size the page.
+     A 140-character title with no spaces sat inside the accepted ceiling and still
+     dragged the public object page to 1,983px against a 1,265px viewport, because a
+     `1fr` grid track is sized from min-content and min-content was the whole token.
+     The page cannot be measured from here, so this checks the rule that fixes it is
+     actually shipped, and the token itself is exercised in a browser. */
+  const v8Css = await get('/');
+  const v8StyleHrefs = [...new Set([...v8Css.text.matchAll(/href="([^"]+\.css)"/g)].map((hit) => hit[1]))];
+  let v8Styles = '';
+  for (const href of v8StyleHrefs) v8Styles += (await get(href)).text;
+  check('the stylesheet breaks a token that would otherwise size the page',
+    /overflow-wrap:\s*anywhere/.test(v8Styles),
+    v8StyleHrefs.length ? `${v8StyleHrefs.length} stylesheets read, rule absent` : 'no stylesheet found');
+  await setRole('community');
+  const v8Token = await post('/api/community/evidence', {
+    objectId: 'moonbird-mask', title: 'A'.repeat(140), kinds: ['Object information'],
+    details: [{ kind: 'Object information', values: { claim: 'A claim.' } }], consent: 'public_attributed',
+  });
+  check('a title at the ceiling is still accepted', v8Token.status === 200, `status ${v8Token.status}`);
+  const v8Page = await get('/objects/moonbird-mask');
+  check('the page that renders it still serves', v8Page.status === 200 && v8Page.text.includes('A'.repeat(140)), `status ${v8Page.status}`);
+
+  /* V7-10 — the surface is no stricter than its own catalogue.
+     Hoisting the `object_id` read made every tool refuse one, including the tools whose
+     schema declares no parameters at all — while the same call carrying a malformed
+     `title` was ignored. Two answers for one kind of undeclared field. */
+  await setRole('curator');
+  const v8Undeclared = [['get_collection_summary', {}], ['list_pending_approvals', {}], ['check_approval', { approval_id: 'APR-NONE' }]];
+  const v8TooStrict = [];
+  for (const [name, args] of v8Undeclared) {
+    const spurious = await tool(name, { ...args, object_id: 'moonbird-mask' });
+    const clean = await tool(name, args);
+    if (spurious.status !== clean.status) v8TooStrict.push(`${name}: ${clean.status} clean vs ${spurious.status} with object_id`);
+  }
+  check('a tool that does not declare object_id ignores one', v8TooStrict.length === 0, v8TooStrict.join(' | '));
+  /* The other direction, which is the one a gate like this gets wrong: every tool that
+     does declare `object_id` must still be judged on it. A gate applied to the wrong set
+     would let an unchecked id through to the query rather than refuse it here. */
+  const v8Declarers = [
+    ['curator', 'propose_label_update', { draft: 'A draft.', evidence_ids: ['EV-068'] }],
+    ['curator', 'open_return_review', { basis: 'A basis.', evidence_ids: ['EV-068'] }],
+    ['curator', 'draft_label', {}],
+    ['curator', 'build_provenance_timeline', {}],
+    ['curator', 'list_submissions', {}],
+    ['community', 'get_object_detail', {}],
+    ['community', 'get_provenance_timeline', {}],
+    ['community', 'list_object_assets', {}],
+    ['community', 'submit_evidence', { title: 'T', description: 'D', consent: 'public_attributed' }],
+    ['community', 'submit_context_claim', { claim: 'C', source: 'S', consent: 'public_attributed' }],
+  ];
+  const v8Unjudged = [];
+  for (const [role, name, args] of v8Declarers) {
+    await setRole(role);
+    const over = await tool(name, { ...args, object_id: 'o'.repeat(121) });
+    if (over.json?.field !== 'object_id') v8Unjudged.push(`${name} over-long → ${over.json?.outcome} ${over.json?.field}`);
+    const wrong = await tool(name, { ...args, object_id: { a: 1 } });
+    if (wrong.json?.field !== 'object_id') v8Unjudged.push(`${name} non-text → ${wrong.json?.outcome} ${wrong.json?.field}`);
+  }
+  check('every tool that declares object_id is still judged on it', v8Unjudged.length === 0, v8Unjudged.join(' | '));
+  await setRole('curator');
+
+  /* V7-11 — a refusal reaches the screen whole.
+     Every console reads `reason` and `recovery`; the approval drawer read `reason` and
+     `next`, which the shared reader does not set, so the sentence saying what to do
+     went missing from exactly the refusals V7-1 had just added. */
+  const v8Proposal = await tool('propose_label_update', { object_id: 'moonbird-mask', draft: 'Moonbird Mask. Recovery probe.', evidence_ids: ['EV-068', 'EV-059'] });
+  const v8Refusals = [
+    ['draft past the ceiling', `/api/curator/approvals/${v8Proposal.json?.approval_id}/resolve`, { action: 'approve_with_edit', draft: 'x'.repeat(6001) }],
+    ['an emptied editor', `/api/curator/approvals/${v8Proposal.json?.approval_id}/resolve`, { action: 'approved', draft: '   ' }],
+    ['an over-long edit reason', `/api/curator/approvals/${v8Proposal.json?.approval_id}/resolve`, { action: 'approve_with_edit', draft: 'ok', editReason: 'r'.repeat(501) }],
+  ];
+  const v8Halved = [];
+  for (const [label, path, body] of v8Refusals) {
+    const response = await post(path, body);
+    if (!response.json?.reason || !response.json?.recovery) v8Halved.push(`${label}: ${JSON.stringify(response.json).slice(0, 80)}`);
+  }
+  check('every drawer refusal carries both halves for the console to render', v8Halved.length === 0, v8Halved.join(' | '));
+  await setRole('community');
+  const v8Named = new FormData();
+  v8Named.append('file', new Blob([Uint8Array.from([0x25, 0x50, 0x44, 0x46])], { type: 'application/pdf' }), `${'n'.repeat(200)}.pdf`);
+  const v8Upload = await req('/api/assets', { method: 'POST', body: v8Named });
+  check('an upload refusal carries the sentence that says what to do', !!v8Upload.json?.reason && !!v8Upload.json?.recovery, JSON.stringify(v8Upload.json).slice(0, 120));
+  /* V7-12 — a curator learns at the door, not on the last click.
+     The rule itself was never in doubt: a contribution is evidence the museum received,
+     and a curator filing one would blur `submitted` against `verified`. What was wrong
+     was that the form rendered in full and refused after four steps of typing, while
+     every other rule in this system is checked as it is broken. Both halves are checked
+     here — the page that no longer offers the form, and the route that still refuses
+     the write whatever the page does. */
+  await setRole('curator');
+  const v8CuratorForm = await get('/contribute?object=moonbird-mask');
+  check('a curator is told before filling the form in, not after',
+    /This form files community evidence/.test(v8CuratorForm.text),
+    v8CuratorForm.text.match(/<h1[^>]*>([^<]{0,60})/)?.[1] ?? `status ${v8CuratorForm.status}`);
+  check('the form itself is not rendered for a curator',
+    !/Short title/.test(v8CuratorForm.text) && !/Submit contribution/.test(v8CuratorForm.text),
+    'the contribution form is still on the page');
+  check('the page offers the two things a curator can actually do',
+    /curator console/i.test(v8CuratorForm.text) && /View as community/.test(v8CuratorForm.text),
+    'one of the two paths is missing');
+  const v8StillRefused = await post('/api/community/evidence', {
+    objectId: 'moonbird-mask', title: 'Door probe', kinds: ['Object information'],
+    details: [{ kind: 'Object information', values: { claim: 'A claim.' } }],
+  });
+  check('the route refuses a curator write whatever the page renders',
+    v8StillRefused.status === 403 && v8StillRefused.json?.policy === 'role_not_permitted',
+    JSON.stringify(v8StillRefused.json).slice(0, 120));
+  await setRole('community');
+  const v8CommunityForm = await get('/contribute?object=moonbird-mask');
+  check('a community session still gets the form',
+    /Short title/.test(v8CommunityForm.text) && !/This form files community evidence/.test(v8CommunityForm.text),
+    `status ${v8CommunityForm.status}`);
   /* ---------- report ---------- */
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${'-'.repeat(60)}`);

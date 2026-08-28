@@ -9,12 +9,28 @@ import { APPROVAL_TTL_MS, ensureDatabase, sha256 } from '@/db/setup';
 import { buildLabelApprovalSnapshot, canonicalJson } from '@/lib/approval-snapshot';
 import { CONSENT_LEVELS, MAX_EVIDENCE_IDS, MAX_TEXT, isConsent, isQuotable, isSettledSubmission, type Authority, type Consent, type EvidenceRecord, type LabelAssertion, type Visibility } from '@/lib/domain/types';
 import { refused, takeStringList, takeText } from '@/lib/http/input';
+import { curatorTools, communityTools } from '@/lib/webmcp/tools';
 import { assetAccess, MAX_ASSETS_PER_CONTRIBUTION } from '@/lib/assets/access';
 import { slugFor } from '@/lib/community/object-input';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
 import type { PolicyResult } from '@/lib/policy/types';
 import { evidenceFor, objectRecord, searchCollection } from '@/lib/records';
 import { sessionFromRequest } from '@/lib/session';
+
+/**
+ * The tools whose catalogue entry declares `object_id`.
+ *
+ * V7-7 moved the `object_id` read to the top of the handler so that no argument was
+ * left unchecked, and in doing so made the surface stricter than its own contract: a
+ * tool that declares no parameters at all refused a call because of an `object_id` it
+ * had never asked for, while the same call carrying a malformed `title` was ignored
+ * (V7-10). The read still happens once, but it only judges the tools that asked for it.
+ */
+const DECLARES_OBJECT_ID = new Set(
+  [...curatorTools, ...communityTools]
+    .filter((tool) => 'object_id' in (tool.properties ?? {}))
+    .map((tool) => tool.name),
+);
 
 const CURATOR_ONLY = new Set([
   'get_collection_summary', 'list_objects', 'list_submissions', 'get_review_case',
@@ -277,7 +293,9 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
    * a bare type check like an id, and it is not an id — a contributor reads it back.
    * `grep "typeof args\."` returning nothing is the invariant that keeps this closed.
    */
-  const objectId$ = takeText(args.object_id, 'object_id', { max: MAX_TEXT.id, label: 'An object id' });
+  const objectId$ = DECLARES_OBJECT_ID.has(name)
+    ? takeText(args.object_id, 'object_id', { max: MAX_TEXT.id, label: 'An object id' })
+    : '';
   if (refused(objectId$)) return objectId$.refusal;
   const objectId = objectId$;
 

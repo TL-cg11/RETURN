@@ -156,11 +156,17 @@ export function CuratorShell({
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
-    const data = await response.json().catch(() => null) as { resolution?: string; reason?: string; next?: string } | null;
+    const data = await response.json().catch(() => null) as { resolution?: string; reason?: string; recovery?: string; next?: string } | null;
     if (!response.ok) {
       // The gateway explains why it refused and what to do next. Say both rather
       // than replacing a real answer with a generic failure.
-      setError(data?.reason ? [data.reason, data.next].filter(Boolean).join(' ') : 'Could not save this decision.');
+      //
+      // `recovery` first: this read only `next`, which the route's own helper sets but
+      // the shared reader does not, so the three refusals V7-1 added to this drawer —
+      // a label past the ceiling, a non-text label, an emptied editor — showed the
+      // reason with the sentence saying what to do about it missing (V7-11). The other
+      // two consoles already read `recovery`; this one was the odd surface out.
+      setError(data?.reason ? [data.reason, data.recovery ?? data.next].filter(Boolean).join(' ') : 'Could not save this decision.');
       return;
     }
     setResolved(data?.resolution ?? (decision === 'reject' ? 'rejected' : 'approved'));

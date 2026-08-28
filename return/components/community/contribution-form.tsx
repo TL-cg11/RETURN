@@ -67,8 +67,15 @@ export function ContributionForm({ objectId, objects, fromObject }: { objectId: 
       const body = new FormData();
       body.append('file', file);
       const response = await fetch('/api/assets', { method: 'POST', body });
-      const data = await response.json() as { id?: string; kind?: string; reason?: string };
-      if (!response.ok || !data.id) { setError(data.reason ?? 'That file could not be uploaded.'); break; }
+      const data = await response.json() as { id?: string; kind?: string; reason?: string; recovery?: string };
+      // Both halves of the refusal. The reason names what is wrong and the recovery says
+      // what to do about it, and this used to print only the first — so a contributor
+      // whose file name ran over read "A file name is at most 120 characters, and this
+      // one is 204." without the sentence telling them to rename it (V7-11).
+      if (!response.ok || !data.id) {
+        setError([data.reason, data.recovery].filter(Boolean).join(' ') || 'That file could not be uploaded.');
+        break;
+      }
       setAttachments((now) => [...now, { id: data.id!, fileName: file.name, kind: data.kind ?? 'file', forKind: kind, alt: '' }]);
     }
     setUploading('');
@@ -105,10 +112,10 @@ export function ContributionForm({ objectId, objects, fromObject }: { objectId: 
         assetAlts: Object.fromEntries(attachments.filter((item) => item.alt.trim()).map((item) => [item.id, item.alt.trim()])),
       }),
     });
-    const data = await response.json() as { id?: string; reason?: string };
+    const data = await response.json() as { id?: string; reason?: string; recovery?: string };
     if (!response.ok || !data.id) {
       setPending(false);
-      setError(data.reason ?? 'Could not submit this contribution.');
+      setError([data.reason, data.recovery].filter(Boolean).join(' ') || 'Could not submit this contribution.');
       return;
     }
     // Stay disabled through the navigation. Re-enabling here let a second click
