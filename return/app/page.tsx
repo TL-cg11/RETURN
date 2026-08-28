@@ -22,7 +22,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ p
   const current = Math.min(Math.max(1, Number(page) || 1), pageCount);
 
   return (
-    <main>
+    <main id="main" tabIndex={-1}>
       <CommunityHeader />
 
       <section className="hero" aria-labelledby="hero-title">

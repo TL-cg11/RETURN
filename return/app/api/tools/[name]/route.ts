@@ -1,5 +1,5 @@
 import {
-  attachAssetsToSubmission, countByStatus, createEscalation, getApproval, getAsset, getEvidenceByIds, getSubmission,
+  attachAssetsToSubmission, countByStatus, countSubmissionsByObject, createEscalation, getApproval, getAsset, getEvidenceByIds, getSubmission,
   objectWithAccession,
   appendClarification, parseClarifications,
   listActivity, listApprovals, listObjectAssets, listObjects, listSubmissionAssets, listSubmissions, recordActivity,
@@ -7,7 +7,7 @@ import {
 } from '@/db/queries';
 import { APPROVAL_TTL_MS, ensureDatabase, sha256 } from '@/db/setup';
 import { buildLabelApprovalSnapshot, canonicalJson } from '@/lib/approval-snapshot';
-import { CONSENT_LEVELS, MAX_EVIDENCE_IDS, MAX_TEXT, isConsent, isQuotable, isSettledSubmission, type Authority, type Consent, type EvidenceRecord, type LabelAssertion, type Visibility } from '@/lib/domain/types';
+import { CONSENT_LEVELS, MAX_EVIDENCE_IDS, MAX_TEXT, isAttributable, isConsent, isQuotable, isSettledSubmission, type Authority, type Consent, type EvidenceRecord, type LabelAssertion, type Visibility } from '@/lib/domain/types';
 import { refused, takeStringList, takeText } from '@/lib/http/input';
 import { curatorTools, communityTools } from '@/lib/webmcp/tools';
 import { assetAccess, MAX_ASSETS_PER_CONTRIBUTION } from '@/lib/assets/access';
@@ -15,7 +15,8 @@ import { slugFor } from '@/lib/community/object-input';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
 import type { PolicyResult } from '@/lib/policy/types';
 import { evidenceFor, objectRecord, searchCollection } from '@/lib/records';
-import { sessionFromRequest } from '@/lib/session';
+import { sessionForWrite, sessionFromRequest, withSessionCookies, type Session } from '@/lib/session';
+import { overWriteLimit } from '@/lib/http/rate-limit';
 
 /**
  * The tools whose catalogue entry declares `object_id`.
@@ -30,6 +31,14 @@ const DECLARES_OBJECT_ID = new Set(
   [...curatorTools, ...communityTools]
     .filter((tool) => 'object_id' in (tool.properties ?? {}))
     .map((tool) => tool.name),
+);
+
+/**
+ * The tools that write. Read from the catalogue's own `readOnly` flag rather than
+ * listed again here, so a new writing tool cannot be left off by hand (V9-4).
+ */
+const WRITING_TOOLS = new Set(
+  [...curatorTools, ...communityTools].filter((tool) => tool.readOnly === false).map((tool) => tool.name),
 );
 
 const CURATOR_ONLY = new Set([
@@ -103,13 +112,23 @@ function publicAsset(row: AssetRow) {
   };
 }
 
-/** Public shape of a submission. Bodies of restricted material are withheld. */
+/**
+ * Public shape of a submission. Bodies of restricted material are withheld, and so is
+ * the contributor's name unless consent permits attribution (V9-2).
+ *
+ * Quotable and nameable are separate questions. `public_anonymous` says the material
+ * may be shown and the person may not be named; this returned `contributor` whatever
+ * the level said, so the name reached the surface an agent drafts labels from. The
+ * object page had the rule inline and the tools did not — one rule, two answers.
+ */
 function publicSubmission(row: SubmissionRow) {
   // Withheld unless consent names a level that permits publication (MCP-E2).
   const withheld = !isQuotable(row.consent);
+  const nameable = isAttributable(row.consent);
   return {
     id: row.id, object_id: row.object_id, kind: row.kind, title: row.title,
-    contributor: row.source, consent: row.consent, status: row.status,
+    contributor: nameable ? row.source : null, attributable: nameable,
+    consent: row.consent, status: row.status,
     requested_outcome: row.requested_outcome, authority: 'submitted' as Authority,
     description: withheld ? null : row.description,
     quotable: !withheld,
@@ -239,7 +258,19 @@ function labelAssertions(record: { gap: string | null }, evidence: EvidenceRecor
  */
 export async function POST(request: Request, context: { params: Promise<{ name: string }> }) {
   try {
-    return await handleTool(request, context);
+    const { name } = await context.params;
+    // Reading is shared — everyone browses the same seeded collection. Writing is not:
+    // a call that writes gets the caller a workspace of their own before it runs, and
+    // the cookies that put them there ride back on the answer (V9-4).
+    const resolved = WRITING_TOOLS.has(name)
+      ? await sessionForWrite(request)
+      : { session: await sessionFromRequest(request), cookies: [] as string[] };
+    if ('refusal' in resolved) return resolved.refusal;
+    if (WRITING_TOOLS.has(name)) {
+      const throttled = await overWriteLimit(request, resolved.session.museumId);
+      if (throttled) return withSessionCookies(throttled, resolved.cookies);
+    }
+    return withSessionCookies(await handleTool(request, name, resolved.session), resolved.cookies);
   } catch (error) {
     console.error('[RE:TURN] tool call failed', error);
     return Response.json({
@@ -250,9 +281,8 @@ export async function POST(request: Request, context: { params: Promise<{ name: 
   }
 }
 
-async function handleTool(request: Request, { params }: { params: Promise<{ name: string }> }) {
-  const { name } = await params;
-  const { role, museumId } = await sessionFromRequest(request);
+async function handleTool(request: Request, name: string, session: Session) {
+  const { role, museumId } = session;
 
   // The last answer on this surface that was not in the four-field contract (F4-4).
   if (!KNOWN.has(name)) {
@@ -461,12 +491,13 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
       const status = status$.toLowerCase();
       const collection = await listObjects(museumId, 'agent');
       const objects = collection.filter((item) => !status || item.status.toLowerCase().includes(status));
-      const perObject = await Promise.all(objects.map((item) => listSubmissions(museumId, { objectId: item.id })));
+      // One grouped count rather than one list per object (V9-6).
+      const perObject = await countSubmissionsByObject(museumId);
       return Response.json({
         count: objects.length,
-        objects: objects.map((item, i) => ({
+        objects: objects.map((item) => ({
           id: item.id, title: item.title, accession: item.accession, status: item.status, gap: item.gap,
-          new_submissions: perObject[i].filter((s) => s.status === 'received').length,
+          new_submissions: perObject.get(item.id)?.received ?? 0,
         })),
       });
     }
@@ -557,8 +588,10 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
           ? ['The current label implies clear prior custody, but the 1968 invoice names no prior owner.']
           : ['No verified counterpart is on file for this object yet.'],
         open_questions: record?.questions ?? [],
-        consent_restrictions: !isQuotable(row.consent)
-          ? ['This material may inform review but cannot be quoted in public output.'] : [],
+        consent_restrictions: [
+          ...(!isQuotable(row.consent) ? ['This material may inform review but cannot be quoted in public output.'] : []),
+          ...(!isAttributable(row.consent) ? ['The contributor chose not to be named. Do not attribute this material to a person.'] : []),
+        ],
         untrusted_content: true,
       });
     }

@@ -66,7 +66,7 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
   const restricted = !isQuotable(submission.consent);
 
   return (
-    <main className="case-page">
+    <main id="main" tabIndex={-1} className="case-page">
       <div className="case-top">
         <div>
           <div className="case-breadcrumb"><Link href="/curator/submissions">Submissions</Link><span>/</span><span>{submission.id}</span></div>

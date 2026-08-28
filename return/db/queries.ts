@@ -276,14 +276,53 @@ export async function getEvidenceByIds(museumId: string, ids: string[], access: 
  */
 export const MAX_SUBMISSION_ROWS = 500;
 
-export async function listSubmissions(museumId: string, filter: { status?: string; objectId?: string } = {}) {
+/** How many contributions one page of the inbox shows. */
+export const SUBMISSIONS_PER_PAGE = 25;
+
+export async function listSubmissions(museumId: string, filter: { status?: string; objectId?: string; limit?: number; offset?: number } = {}) {
   const db = await ensureDatabase(museumId);
   const where = ['museum_id=?'];
   const values: unknown[] = [museumId];
   if (filter.status) { where.push('status=?'); values.push(filter.status); }
   if (filter.objectId) { where.push('object_id=?'); values.push(filter.objectId); }
-  const result = await db.prepare(`SELECT * FROM submissions WHERE ${where.join(' AND ')} ORDER BY created_at DESC LIMIT ${MAX_SUBMISSION_ROWS}`).bind(...values).all<SubmissionRow>();
+  // The ceiling stays: it is what keeps one statement from returning a workspace.
+  // A caller may ask for less, and for a window further down (V9-6).
+  const limit = Math.min(Math.max(1, Math.floor(filter.limit ?? MAX_SUBMISSION_ROWS)), MAX_SUBMISSION_ROWS);
+  const offset = Math.max(0, Math.floor(filter.offset ?? 0));
+  const result = await db.prepare(`SELECT * FROM submissions WHERE ${where.join(' AND ')} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .bind(...values, limit, offset).all<SubmissionRow>();
   return result.results ?? [];
+}
+
+/**
+ * Contribution counts per object, and how many of those are new.
+ *
+ * Four screens counted by loading a page of rows and filtering it, which understates
+ * every number once a workspace passes the row ceiling — the same defect as the
+ * dashboard totals, in four more places (V9-6). Counting is a count.
+ */
+export async function countSubmissionsByObject(museumId: string) {
+  const db = await ensureDatabase(museumId);
+  const result = await db.prepare(`SELECT object_id,
+      COUNT(*) AS total,
+      SUM(CASE WHEN status='received' THEN 1 ELSE 0 END) AS received,
+      MAX(created_at) AS latest
+    FROM submissions WHERE museum_id=? GROUP BY object_id`)
+    .bind(museumId).all<{ object_id: string; total: number; received: number | null; latest: number | null }>();
+  const counts = new Map<string, { total: number; received: number; latest: number | null }>();
+  for (const row of result.results ?? []) counts.set(row.object_id, { total: row.total, received: row.received ?? 0, latest: row.latest });
+  return counts;
+}
+
+/** How many contributions match a filter, counted rather than listed (V9-3, V9-6). */
+export async function countSubmissions(museumId: string, filter: { status?: string; objectId?: string } = {}) {
+  const db = await ensureDatabase(museumId);
+  const where = ['museum_id=?'];
+  const values: unknown[] = [museumId];
+  if (filter.status) { where.push('status=?'); values.push(filter.status); }
+  if (filter.objectId) { where.push('object_id=?'); values.push(filter.objectId); }
+  const row = await db.prepare(`SELECT COUNT(*) AS total FROM submissions WHERE ${where.join(' AND ')}`).bind(...values).first<{ total: number }>();
+  return row?.total ?? 0;
 }
 
 export async function getSubmission(museumId: string, id: string) {
@@ -395,10 +434,21 @@ export async function getEscalation(museumId: string, id: string) {
  * means they judged there was nothing to act on — the audit trail keeps the
  * difference, because who decided what is the point of this record.
  */
+/**
+ * Returns whether this call is the one that closed it (V9-1).
+ *
+ * `status='open'` belongs in the statement, not in a check before it. The route read
+ * the row, saw `open`, and then wrote — so four requests arriving together all read
+ * `open`, all passed, and all wrote. The referral came out of it recorded as reviewed
+ * twice and dismissed twice, with four different notes, which is the one thing an audit
+ * trail must never say. The approval resolver already puts its guard in the UPDATE and
+ * counts the changed rows; this now does the same.
+ */
 export async function resolveEscalation(museumId: string, id: string, status: 'reviewed' | 'dismissed') {
   const db = await ensureDatabase(museumId);
-  await db.prepare('UPDATE escalations SET status=?, resolved_at=? WHERE museum_id=? AND id=?')
+  const result = await db.prepare("UPDATE escalations SET status=?, resolved_at=? WHERE museum_id=? AND id=? AND status='open'")
     .bind(status, Date.now(), museumId, id).run();
+  return (result.meta?.changes ?? 0) === 1;
 }
 
 /** The true total, so a capped list never lets the interface understate the queue. */
@@ -428,17 +478,34 @@ export async function getApproval(museumId: string, id: string) {
 }
 
 /** Counts behind the curator dashboard and get_collection_summary. */
+/**
+ * The numbers on the dashboard, counted rather than tallied from a page of rows (V9-3).
+ *
+ * These were computed from `listSubmissions`, which stops at MAX_SUBMISSION_ROWS. Past
+ * that ceiling the dashboard understated the queue — 523 contributions were reported as
+ * 500, and 130 private-consent items as 125, so a curator was told there was less
+ * withheld material than there was. The inbox page counted properly and said 523, which
+ * is how one product came to disagree with itself. `countEscalations` already carried
+ * the note about a capped list understating a queue; this is the same hazard, counted
+ * the same way.
+ */
 export async function workspaceSummary(museumId: string) {
-  const [objects, submissions, approvals] = await Promise.all([
-    listObjects(museumId, 'curator'), listSubmissions(museumId), listApprovals(museumId, 'pending'),
+  const db = await ensureDatabase(museumId);
+  const [objects, approvals, totals] = await Promise.all([
+    listObjects(museumId, 'curator'),
+    listApprovals(museumId, 'pending'),
+    db.prepare(`SELECT COUNT(*) AS total,
+        SUM(CASE WHEN status='received' THEN 1 ELSE 0 END) AS received,
+        SUM(CASE WHEN consent='private' THEN 1 ELSE 0 END) AS private_consent
+      FROM submissions WHERE museum_id=?`).bind(museumId).first<{ total: number; received: number | null; private_consent: number | null }>(),
   ]);
   return {
     objects: objects.length,
     open_gaps: objects.filter((object) => object.gap).length,
-    new_submissions: submissions.filter((row) => row.status === 'received').length,
-    total_submissions: submissions.length,
+    new_submissions: totals?.received ?? 0,
+    total_submissions: totals?.total ?? 0,
     pending_approvals: approvals.length,
-    consent_alerts: submissions.filter((row) => row.consent === 'private').length,
+    consent_alerts: totals?.private_consent ?? 0,
   };
 }
 

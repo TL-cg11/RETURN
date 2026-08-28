@@ -1,5 +1,5 @@
 import { NavLink as Link } from '@/components/shared/nav-link';
-import { countEscalations, listActivity, listEscalations, listSubmissions, workspaceSummary } from '@/db/queries';
+import { countEscalations, countSubmissionsByObject, listActivity, listEscalations, listSubmissions, workspaceSummary } from '@/db/queries';
 import { ApprovalTrigger } from '@/components/curator/approval-trigger';
 import { EscalationActions } from '@/components/curator/escalation-actions';
 import { collectionFor } from '@/lib/records';
@@ -25,16 +25,18 @@ export default async function CuratorDashboard() {
   const { museumId } = await sessionFromCookies();
   const [summary, submissions, activity, collection, escalations, escalationTotal] = await Promise.all([
     workspaceSummary(museumId),
-    listSubmissions(museumId),
+    listSubmissions(museumId, { limit: 5 }),
     listActivity(museumId, 5),
     collectionFor(museumId, 'curator'),
     listEscalations(museumId, 'open', 5),
     countEscalations(museumId, 'open'),
   ]);
-  const queue = submissions.slice(0, 5);
+  const queue = submissions;
+  // Counted, not tallied from the five rows the queue needed (V9-6).
+  const sourceCounts = await countSubmissionsByObject(museumId);
 
   return (
-    <main className="dashboard">
+    <main id="main" tabIndex={-1} className="dashboard">
       <div className="dashboard-head">
         <div>
           <p className="console-eyebrow">Curatorial workspace</p>
@@ -130,7 +132,7 @@ export default async function CuratorDashboard() {
             <Link href={`/objects/${object.id}`} key={object.id}>
               <div><strong>{object.title}</strong><span>{object.gap}</span></div>
               <i style={{ width: `${62 - index * 12}%` }} />
-              <b>{submissions.filter((s) => s.object_id === object.id).length} sources</b>
+              <b>{sourceCounts.get(object.id)?.total ?? 0} sources</b>
             </Link>
           ))}
         </div>

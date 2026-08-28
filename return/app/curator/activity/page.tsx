@@ -25,7 +25,7 @@ export default async function ActivityPage({ searchParams }: { searchParams: Sea
   const first = total === 0 ? 0 : (current - 1) * PER_PAGE + 1;
 
   return (
-    <main className="console-page">
+    <main id="main" tabIndex={-1} className="console-page">
       <div className="page-head">
         <div>
           <p className="console-eyebrow">Audit trail</p>

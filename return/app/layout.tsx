@@ -15,5 +15,16 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="en"><body className={`${geistSans.variable} ${geistMono.variable}`}><SessionBootstrap />{children}</body></html>;
+  // The first thing a keyboard reaches on every page, and the only thing that is invisible
+  // until it is focused. Without it, reaching a contribution meant tabbing past the whole
+  // header on every record in the collection (V9-8).
+  return (
+    <html lang="en">
+      <body className={`${geistSans.variable} ${geistMono.variable}`}>
+        <a className="skip-link" href="#main">Skip to the record</a>
+        <SessionBootstrap />
+        {children}
+      </body>
+    </html>
+  );
 }

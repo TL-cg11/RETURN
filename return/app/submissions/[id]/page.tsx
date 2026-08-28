@@ -72,7 +72,7 @@ export default async function SubmissionStatus({ params }: { params: Promise<{ i
   const reflectedPublication = reflected ? publicationOutcome?.publication : null;
 
   return (
-    <main>
+    <main id="main" tabIndex={-1}>
       <CommunityHeader />
       <section className="status-page">
         <p className="eyebrow">{reflected || closed ? 'Review outcome' : 'Contribution received'}</p>

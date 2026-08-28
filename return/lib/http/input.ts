@@ -1,4 +1,6 @@
 import { MAX_TEXT } from '@/lib/domain/types';
+import { sessionForWrite, withSessionCookies, type Session } from '@/lib/session';
+import { overWriteLimit } from '@/lib/http/rate-limit';
 
 /**
  * Reading what a caller sent, once, for every route.
@@ -118,6 +120,30 @@ export function takeStringList(value: unknown, field: string, options: { max: nu
     }
   }
   return ids;
+}
+
+/**
+ * A write route: same safety net, plus the workspace the write belongs in (V9-4) and the
+ * ceiling on how fast one caller may use it (V9-5).
+ *
+ * Reads are shared — everyone browses the same seeded collection, which costs nothing and
+ * is the point of a public demo. Writes are not: a session still on the shared workspace
+ * gets one of its own here, before the handler sees it, so two strangers never file into
+ * the same record. The session arrives as an argument rather than being read again inside
+ * the handler, because reading it again would find the old one.
+ */
+export function guardedWrite<A extends unknown[]>(
+  handler: (request: Request, session: Session, ...rest: A) => Promise<Response>,
+  kind: 'write' | 'upload' = 'write',
+) {
+  return guarded(async (request: Request, ...rest: A) => {
+    const resolved = await sessionForWrite(request);
+    if ('refusal' in resolved) return resolved.refusal;
+    const { session, cookies } = resolved;
+    const throttled = await overWriteLimit(request, session.museumId, kind);
+    if (throttled) return withSessionCookies(throttled, cookies);
+    return withSessionCookies(await handler(request, session, ...rest), cookies);
+  });
 }
 
 /**

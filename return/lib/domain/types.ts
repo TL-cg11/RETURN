@@ -18,6 +18,18 @@ export const isConsent = (value: unknown): value is Consent => typeof value === 
 export const isQuotable = (value: unknown): boolean => value === 'public_anonymous' || value === 'public_attributed';
 
 /**
+ * Whether consent permits naming the contributor.
+ *
+ * `public_anonymous` is the level whose entire purpose is that the material may be shown
+ * and the person may not be named, so quotable and nameable are two different questions
+ * and only `public_attributed` answers yes to both. The object page already applied this
+ * rule inline; the agent surface returned `contributor` for every level, so the one
+ * consent choice that exists to withhold a name handed it to the tool that drafts labels
+ * (V9-2). One function now, read by both.
+ */
+export const isAttributable = (value: unknown): boolean => value === 'public_attributed';
+
+/**
  * Input ceilings for the two free-text fields that reach a person (OB-1).
  *
  * `check_submission` returns a curator's question to the contributing agent and used to

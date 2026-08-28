@@ -3,9 +3,8 @@ import { isAllowedUpload, MAX_ASSET_BYTES, MAX_ASSETS_PER_CONTRIBUTION } from '@
 import { putAsset, storageKeyFor } from '@/lib/assets/storage';
 import { readImageDimensions } from '@/lib/assets/image-dimensions';
 import type { ImageDimensions } from '@/lib/assets/image-dimensions';
-import { sessionFromRequest } from '@/lib/session';
 import { MAX_TEXT } from '@/lib/domain/types';
-import { guarded, refuse, refused, takeText } from '@/lib/http/input';
+import { guardedWrite, refuse, refused, takeText } from '@/lib/http/input';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,8 +18,8 @@ export const dynamic = 'force-dynamic';
  * `RETURN_PLAN.md` §15.1 keeps binaries off the tool surface, so this route is the
  * only way bytes enter the system.
  */
-export const POST = guarded(async (request: Request) => {
-  const { museumId, role } = await sessionFromRequest(request);
+export const POST = guardedWrite(async (request: Request, session) => {
+  const { museumId, role } = session;
 
   const form = await request.formData().catch(() => null);
   const file = form?.get('file');
@@ -94,4 +93,4 @@ export const POST = guarded(async (request: Request) => {
 
   return Response.json({ outcome: 'applied', id, kind: allowed.kind, file_name: fileName, byte_size: file.size,
     width: dimensions?.width ?? null, height: dimensions?.height ?? null, url: `/api/assets/${id}` });
-});
+}, 'upload');

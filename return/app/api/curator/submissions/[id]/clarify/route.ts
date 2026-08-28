@@ -1,11 +1,10 @@
 import { appendClarification, getSubmission, recordActivity, setSubmissionStatus } from '@/db/queries';
 import { MAX_TEXT, isSettledSubmission } from '@/lib/domain/types';
-import { guarded, readJsonBody, refused, takeText } from '@/lib/http/input';
+import { guardedWrite, readJsonBody, refused, takeText } from '@/lib/http/input';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
-import { sessionFromRequest } from '@/lib/session';
 
-export const POST = guarded(async (request: Request, { params }: { params: Promise<{ id: string }> }) => {
-  const { role, museumId } = await sessionFromRequest(request);
+export const POST = guardedWrite(async (request: Request, session, { params }: { params: Promise<{ id: string }> }) => {
+  const { role, museumId } = session;
   // This route answered its role check and its not-found path with `{ error }` while its
   // own validation answered in the four fields — two shapes inside one file (F5-2). The
   // conversions in OB-4 and F4-4 both missed it.

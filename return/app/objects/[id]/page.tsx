@@ -8,7 +8,7 @@ import { CommunityHeader } from '@/components/shared/community-header';
 import { listLabelPublications, listObjectAssets, listPublicContributions } from '@/db/queries';
 import { assetAccess } from '@/lib/assets/access';
 import { CONTRIBUTION_KINDS, fieldsFor, summariseDetail, type ContributionKind, type KindDetail } from '@/lib/community/contribution';
-import type { Consent, Visibility } from '@/lib/domain/types';
+import { isAttributable, type Consent, type Visibility } from '@/lib/domain/types';
 import { objectRecord } from '@/lib/records';
 import { sessionFromCookies } from '@/lib/session';
 
@@ -106,7 +106,7 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
   const previousPublication = publications[1];
 
   return (
-    <main>
+    <main id="main" tabIndex={-1}>
       <CommunityHeader />
       <div className="object-breadcrumb"><Link href="/">Collection</Link><span>/</span><span>{record.accession}</span></div>
 
@@ -210,8 +210,11 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
                 <li key={row.id}>
                   <div className="contributed-head">
                     <span className="submitted-badge">Submitted content</span>
-                    <strong>{row.title}</strong>
-                    <small>{row.kind} · {row.consent === 'public_attributed' && row.source ? row.source : 'Contributor chose not to be named'}</small>
+                    {/* A heading, not bold text: the section above is an h2 and the detail
+                        blocks below are h4, so this card was the missing rung and a reader
+                        navigating by heading jumped a level (V9-8). */}
+                    <h3>{row.title}</h3>
+                    <small>{row.kind} · {isAttributable(row.consent) && row.source ? row.source : 'Contributor chose not to be named'}</small>
                   </div>
                   <ContributedMedia
                     title={row.title}

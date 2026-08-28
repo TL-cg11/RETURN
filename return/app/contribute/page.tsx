@@ -18,7 +18,7 @@ export default async function ContributePage({ searchParams }: { searchParams: P
   if (!selected) return null;
 
   return (
-    <main className="contribute-page">
+    <main id="main" tabIndex={-1} className="contribute-page">
       <CommunityHeader />
       <div className="object-breadcrumb">
         <Link href={`/objects/${selected.id}`}>← {selected.title}</Link>

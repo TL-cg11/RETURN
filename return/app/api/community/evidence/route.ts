@@ -3,10 +3,9 @@ import { ensureDatabase } from '@/db/setup';
 import { CONTRIBUTION_KINDS, describeKinds, fieldsFor, missingFields, type ContributionKind, type KindDetail } from '@/lib/community/contribution';
 import { MAX_ASSETS_PER_CONTRIBUTION } from '@/lib/assets/access';
 import { CONSENT_LEVELS, MAX_TEXT, isConsent, type Consent } from '@/lib/domain/types';
-import { guarded, readJsonBody, refused, takeStringList, takeText, type Refusal } from '@/lib/http/input';
+import { guardedWrite, readJsonBody, refused, takeStringList, takeText, type Refusal } from '@/lib/http/input';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
 import { findObject } from '@/lib/records';
-import { sessionFromRequest } from '@/lib/session';
 
 /**
  * What arrives, before anything has been checked.
@@ -60,8 +59,8 @@ function readDetails(kinds: string[], rawDetails: unknown): KindDetail[] | Refus
  * description, so the curator case can show what was actually asked for each kind
  * and the review step can be rebuilt from the same declarations the form renders.
  */
-export const POST = guarded(async (request: Request) => {
-  const { role, museumId } = await sessionFromRequest(request);
+export const POST = guardedWrite(async (request: Request, session) => {
+  const { role, museumId } = session;
   // Every other refusal here answers in the reason/recovery shape the form renders.
   // This one used to answer `error` alone, so a curator session saw only the generic
   // "Could not submit this contribution."

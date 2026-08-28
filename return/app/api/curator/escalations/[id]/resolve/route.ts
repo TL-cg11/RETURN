@@ -1,7 +1,6 @@
 import { getEscalation, recordActivity, resolveEscalation } from '@/db/queries';
-import { sessionFromRequest } from '@/lib/session';
 import { MAX_TEXT } from '@/lib/domain/types';
-import { guarded, readJsonBody, refused, takeText } from '@/lib/http/input';
+import { guardedWrite, readJsonBody, refused, takeText } from '@/lib/http/input';
 
 const ACTIONS = { reviewed: 'resolved a policy referral', dismissed: 'dismissed a policy referral' } as const;
 type Action = keyof typeof ACTIONS;
@@ -13,8 +12,8 @@ type Action = keyof typeof ACTIONS;
  * Resolving changes no object, label, or evidence — it only records that a
  * curator saw the refusal and what they decided about it.
  */
-export const POST = guarded(async (request: Request, { params }: { params: Promise<{ id: string }> }) => {
-  const { role, museumId } = await sessionFromRequest(request);
+export const POST = guardedWrite(async (request: Request, session, { params }: { params: Promise<{ id: string }> }) => {
+  const { role, museumId } = session;
   if (role !== 'curator') return Response.json({ outcome: 'denied', risk: 'LOW', reason: 'Curator role required.', recovery: 'Switch to the curator workspace.' }, { status: 403 });
 
   const { id } = await params;
@@ -46,7 +45,18 @@ export const POST = guarded(async (request: Request, { params }: { params: Promi
     }, { status: 409 });
   }
 
-  await resolveEscalation(museumId, id, action);
+  // The read above is the friendly answer; this is the one that decides. Only the
+  // request whose UPDATE actually changed the row writes an activity entry, so a
+  // referral resolved by two people at once is recorded once, by whoever got there.
+  const closed = await resolveEscalation(museumId, id, action);
+  if (!closed) {
+    const latest = await getEscalation(museumId, id).catch(() => null);
+    return Response.json({
+      outcome: 'denied', policy: 'escalation_already_resolved',
+      reason: `This referral was already ${latest?.status ?? 'resolved'}.`,
+      recovery: 'Open the object record to see the current state.',
+    }, { status: 409 });
+  }
   await recordActivity(museumId, 'Mina, Curator', ACTIONS[action],
     note || `${escalation.tool.replaceAll('_', ' ')} · ${escalation.policy.replaceAll('_', ' ')}`, {
       actorRole: 'curator_ui', actorType: 'human', tool: escalation.tool,

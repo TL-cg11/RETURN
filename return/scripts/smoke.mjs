@@ -43,12 +43,15 @@ function absorb(response) {
 }
 
 async function req(path, init = {}) {
+  // `omitCookies` sends the request as a visitor who has none, which is how a write
+  // without a session is exercised (V9-4).
+  const { omitCookies, ...rest } = init;
   const response = await fetch(base + path, {
-    ...init,
-    headers: { ...(init.headers ?? {}), ...(jar.size ? { cookie: cookieHeader() } : {}) },
+    ...rest,
+    headers: { ...(rest.headers ?? {}), ...(!omitCookies && jar.size ? { cookie: cookieHeader() } : {}) },
     redirect: 'manual',
   });
-  absorb(response);
+  if (!omitCookies) absorb(response);
   const text = await response.text();
   let json = null;
   try { json = JSON.parse(text); } catch { /* html */ }
@@ -746,7 +749,9 @@ async function main() {
   check('a private contribution is not marked quotable', privateRow?.quotable === false, JSON.stringify(privateRow));
   const privateCase = await tool('get_review_case', { case_id: noConsent.json?.submission_id });
   check('a private contribution withholds its body from the case', privateCase.json?.submitted?.description === null);
-  check('a private contribution carries its consent restriction', (privateCase.json?.consent_restrictions ?? []).length === 1);
+  check('a private contribution says it cannot be quoted',
+    (privateCase.json?.consent_restrictions ?? []).some((line) => /cannot be quoted/.test(line)),
+    JSON.stringify(privateCase.json?.consent_restrictions));
   const openRow = reviewListed.json?.submissions?.find((row) => row.id === goodConsent.json?.submission_id);
   check('a publicly consented contribution stays quotable', openRow?.quotable === true, JSON.stringify(openRow));
 
@@ -1387,6 +1392,197 @@ async function main() {
   check('a community session still gets the form',
     /Short title/.test(v8CommunityForm.text) && !/This form files community evidence/.test(v8CommunityForm.text),
     `status ${v8CommunityForm.status}`);
+  /* ---------- 19. the exhaustive sweep (FIX_REQUEST_9.md) ---------- */
+  section('concurrency and consent');
+  await post('/api/reset');
+  await setRole('curator');
+
+  /* V9-1 — a referral is resolved once, however many requests arrive together.
+     The route read the row, saw `open`, then wrote. Four requests arriving together all
+     read `open`, all passed the check, and all wrote — the audit trail came out saying
+     one referral was both reviewed and dismissed, with four different notes. The guard
+     now lives in the UPDATE, and only the request that changed a row records anything. */
+  const v9Referral = await tool('open_return_review', { object_id: 'moonbird-mask', basis: 'Concurrency probe.', evidence_ids: ['EV-059'] });
+  const v9EscalationId = v9Referral.json?.escalation_id;
+  check('a refused review opens a referral to race on', !!v9EscalationId, JSON.stringify(v9Referral.json).slice(0, 100));
+  const v9Racers = await Promise.all(Array.from({ length: 6 }, (_, index) =>
+    post(`/api/curator/escalations/${v9EscalationId}/resolve`, { action: index % 2 ? 'dismissed' : 'reviewed', note: `racer ${index}` })));
+  const v9Won = v9Racers.filter((response) => response.status === 200);
+  check('exactly one of six simultaneous resolutions is applied', v9Won.length === 1, `${v9Won.length} applied`);
+  check('the other five are refused as already resolved',
+    v9Racers.filter((r) => r.json?.policy === 'escalation_already_resolved').length === 5,
+    v9Racers.map((r) => r.status).join(','));
+  const v9Feed = await get('/curator/activity');
+  const v9Reviewed = (v9Feed.text.match(/resolved a policy referral/g) ?? []).length;
+  const v9Dismissed = (v9Feed.text.match(/dismissed a policy referral/g) ?? []).length;
+  check('the record does not say one referral was both reviewed and dismissed',
+    v9Reviewed === 0 || v9Dismissed === 0, `${v9Reviewed} reviewed, ${v9Dismissed} dismissed`);
+  const v9Notes = [...new Set(v9Feed.text.match(/racer \d/g) ?? [])];
+  check('one decision leaves one note, not six', v9Notes.length === 1, v9Notes.join(' | '));
+  /* V9-2 — quotable and nameable are separate questions.
+     `public_anonymous` is the level that exists so material may be shown and the person
+     may not be named. The agent surface returned `contributor` for every level, so the
+     one consent choice whose purpose is withholding a name handed it to the tool that
+     drafts labels. The object page had the rule and the tools did not. */
+  await post('/api/reset');
+  await setRole('community');
+  const v9Name = 'Ena-Varo-CONSENT-PROBE';
+  const v9Consented = {};
+  for (const level of ['public_attributed', 'public_anonymous', 'private']) {
+    const filed = await post('/api/community/evidence', {
+      objectId: 'moonbird-mask', title: `${level} item`, source: v9Name, consent: level,
+      kinds: ['Object information'], details: [{ kind: 'Object information', values: { claim: `Body of ${level}.` } }],
+    });
+    v9Consented[level] = filed.json?.id;
+  }
+  await setRole('curator');
+  const v9Named = [];
+  for (const [level, id] of Object.entries(v9Consented)) {
+    const readBack = await tool('get_review_case', { case_id: id });
+    const carries = JSON.stringify(readBack.json).includes(v9Name);
+    if (carries !== (level === 'public_attributed')) v9Named.push(`${level} ${carries ? 'names' : 'withholds'} the contributor`);
+  }
+  check('only attributed consent lets the agent surface name the contributor', v9Named.length === 0, v9Named.join(' | '));
+  const v9Anonymous = await tool('get_review_case', { case_id: v9Consented.public_anonymous });
+  check('an anonymous contribution still carries its body', v9Anonymous.json?.submitted?.description !== null,
+    JSON.stringify(v9Anonymous.json?.submitted).slice(0, 110));
+  check('and says plainly that it must not be attributed',
+    (v9Anonymous.json?.consent_restrictions ?? []).some((line) => /not to be named/.test(line)),
+    JSON.stringify(v9Anonymous.json?.consent_restrictions));
+  const v9Private = await tool('get_review_case', { case_id: v9Consented.private });
+  check('a private contribution withholds body and name together',
+    v9Private.json?.submitted?.description === null && v9Private.json?.submitted?.contributor === null,
+    JSON.stringify(v9Private.json?.submitted).slice(0, 110));
+  const v9Listing = await tool('list_submissions', { limit: 20 });
+  check('no listing carries a name consent withheld', !JSON.stringify(v9Listing.json).includes(v9Name), 'the name is in list_submissions');
+
+  /* V9-3 and V9-6 — every count is a count, and the inbox shows a window.
+     The dashboard tallied its numbers from a page of rows capped at MAX_SUBMISSION_ROWS,
+     so past that ceiling it understated the queue while the inbox counted properly and
+     disagreed with it. Five screens did the same thing in different places. */
+  await setRole('community');
+  const v9Objects = ['moonbird-mask', 'riverstone-vessel', 'four-winds-bowl', 'dawn-marker'];
+  for (let index = 0; index < 30; index++) {
+    await post('/api/community/evidence', {
+      objectId: v9Objects[index % v9Objects.length], title: `Paging ${index}`, consent: 'public_attributed',
+      kinds: ['Object information'], details: [{ kind: 'Object information', values: { claim: `Claim ${index}.` } }],
+    });
+  }
+  await setRole('curator');
+  const v9Summary = await tool('get_collection_summary', {});
+  const v9Inbox = await get('/curator/submissions');
+  const v9InboxAll = Number(v9Inbox.text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').match(/All (\d+)/)?.[1] ?? -1);
+  check('the dashboard total and the inbox total are the same number',
+    v9Summary.json?.total_submissions === v9InboxAll, `summary ${v9Summary.json?.total_submissions} vs inbox ${v9InboxAll}`);
+  const v9Rows = (v9Inbox.text.match(/class="submission-row"/g) ?? []).length;
+  check('the inbox serves one page of rows, not the workspace', v9Rows > 0 && v9Rows <= 25, `${v9Rows} rows`);
+  const v9Flat = (html) => html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+  check('and says which window it is showing', /Showing 1 ?– ?25 of \d+/.test(v9Flat(v9Inbox.text)),
+    v9Flat(v9Inbox.text).match(/Showing[^A-Z]{0,26}/)?.[0] ?? 'no range shown');
+  const v9Page2 = await get('/curator/submissions?page=2');
+  check('a second page starts where the first ended', v9Page2.status === 200 && /Showing 26 ?– ?/.test(v9Flat(v9Page2.text)),
+    v9Flat(v9Page2.text).match(/Showing[^A-Z]{0,26}/)?.[0] ?? `status ${v9Page2.status}`);
+  for (const [label, query] of [['past the end', '?page=9999'], ['not a number', '?page=abc'], ['negative', '?page=-5']]) {
+    const response = await get(`/curator/submissions${query}`);
+    check(`a page number ${label} lands on a real page`, response.status === 200 && /Page \d+ of \d+/.test(v9Flat(response.text)),
+      v9Flat(response.text).match(/Page[^A-Z]{0,18}/)?.[0] ?? `status ${response.status}`);
+  }
+  const v9Sidebar = Number(v9Flat(v9Inbox.text).match(/Submissions (\d+)/)?.[1] ?? -1);
+  check('the sidebar badge counts the workspace, not a page of it', v9Sidebar === v9InboxAll, `badge ${v9Sidebar} vs ${v9InboxAll}`);
+  const v9PerObject = await tool('list_objects', {});
+  const v9Counted = (v9PerObject.json?.objects ?? []).reduce((total, item) => total + (item.new_submissions ?? 0), 0);
+  check('per-object counts add up to the workspace', v9Counted === v9Summary.json?.new_submissions, `${v9Counted} vs ${v9Summary.json?.new_submissions}`);
+  /* V9-4 — reading is shared, writing is not.
+     Every visitor without a session landed in the one shared workspace, so two strangers
+     browsing the deployed site filed into the same record and either could read the
+     other's `private` contribution by clicking through to the curator console. Reads
+     still share the seeded showcase; the first write gives a session a workspace of its
+     own. A write with no session at all is refused rather than handed a fresh workspace,
+     which is what keeps that from becoming a hundred rows per request. */
+  const v9NoSession = await req('/api/community/evidence', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ objectId: 'moonbird-mask', title: 'Sessionless', kinds: ['Object information'], details: [{ kind: 'Object information', values: { claim: 'c' } }] }),
+    omitCookies: true,
+  });
+  check('a write with no session is refused, not given a workspace',
+    v9NoSession.status === 401 && v9NoSession.json?.field === 'session', JSON.stringify(v9NoSession.json).slice(0, 120));
+  const v9SharedRead = await req('/api/session', { omitCookies: true });
+  check('reading without a session still reaches the shared collection',
+    v9SharedRead.json?.museumId === 'museum_demo_01', JSON.stringify(v9SharedRead.json));
+  await post('/api/reset');
+  await setRole('community');
+  const v9Before = (await get('/api/session')).json?.museumId;
+  const v9Own = await post('/api/community/evidence', {
+    objectId: 'moonbird-mask', title: 'Own workspace probe', consent: 'public_attributed',
+    kinds: ['Object information'], details: [{ kind: 'Object information', values: { claim: 'Mine.' } }],
+  });
+  check('a session that has one already keeps writing into it',
+    v9Own.status === 200 && (await get('/api/session')).json?.museumId === v9Before, `${v9Before}`);
+
+  /* V9-5 — a write path has a ceiling on how fast one caller may use it.
+     Forty contributions in 1.7 seconds and twelve simultaneous uploads all succeeded,
+     from a caller with no session. Uploads are held tighter than rows because an object
+     in R2 is the thing nothing ever deletes. */
+  /* V9-7 — a console table cannot be wider than the screen it is on.
+     The priority queue and the objects table carried their desktop columns to every
+     width, so a phone scrolled sideways and the band between two breakpoints was always
+     wrong by whatever number nobody had measured. Fixed track minimums cannot shrink;
+     `minmax(0, …)` can, so the rows compress instead of pushing the page. A stylesheet
+     check rather than a rendered one, because widths are a browser's question — the
+     rendered answer is measured across fourteen widths in a browser instead. */
+  const v9Home = await get('/');
+  const v9Sheets = [...new Set([...v9Home.text.matchAll(/href="([^"]+\.css)"/g)].map((hit) => hit[1]))];
+  let v9Css = '';
+  for (const href of v9Sheets) v9Css += (await get(href)).text;
+  const v9Fixed = [...v9Css.matchAll(/\.(submission-row|object-admin-row|queue-row)[^{]*\{[^}]*grid-template-columns:([^;}]*)/g)]
+    // Icon and arrow columns are meant to be fixed, and are small enough to be harmless.
+    // A wide track that cannot shrink is the one that pushes the page sideways.
+    .filter(([, , columns]) => [...columns.replace(/minmax\([^)]*\)/g, ' ').matchAll(/(\d+)px/g)]
+      .some((hit) => Number(hit[1]) >= 100))
+    .map(([, name, columns]) => `${name}: ${columns.trim().slice(0, 60)}`);
+  check('no console table row holds a column that cannot shrink', v9Fixed.length === 0, v9Fixed.join(' | '));
+
+  /* V9-8 — the keyboard and the outline.
+     Tabbing to a contribution meant passing the whole header on every record, and the
+     card titles were bold text rather than headings, so a reader moving by heading went
+     from an h2 straight to an h4. */
+  check('every page offers a skip link before anything else', /class="skip-link"[^>]*href="#main"|href="#main"[^>]*class="skip-link"/.test(v9Home.text),
+    v9Home.text.match(/skip-link[^>]{0,40}/)?.[0] ?? 'no skip link');
+  check('and it is hidden until focused', /\.skip-link\s*\{[^}]*left:\s*-9999px/.test(v9Css) && /\.skip-link:focus\s*\{[^}]*left:/.test(v9Css),
+    'the skip link is either always visible or never');
+  const v9Object = await get('/objects/moonbird-mask');
+  check('the skip link has somewhere to land', /<main[^>]*id="main"/.test(v9Object.text), 'no #main on the object page');
+  const v9Levels = [...v9Object.text.matchAll(/<h([1-4])[\s>]/g)].map((hit) => Number(hit[1]));
+  const v9Skipped = v9Levels.filter((level, index) => index > 0 && level - v9Levels[index - 1] > 1);
+  check('the heading outline has no missing rung', v9Skipped.length === 0, `levels ${v9Levels.join(',')}`);
+  check('exactly one h1 names the page', (v9Object.text.match(/<h1[\s>]/g) ?? []).length === 1,
+    `${(v9Object.text.match(/<h1[\s>]/g) ?? []).length} h1 elements`);
+  /* The throttle check runs last on purpose: proving the ceiling works means reaching
+     it, and a run that reaches it first would starve every check after it. */
+  // Reaching a per-minute ceiling spends it, so a run that did this every time could
+  // not be run twice in a minute — the checks after it would meet the ceiling instead
+  // of the behaviour they test. It is asked for explicitly rather than skipped
+  // quietly: 'npm run test:smoke -- <origin> --limits'.
+  if (process.argv.includes('--limits')) {
+  section('write ceiling');
+  await setRole('community');
+  // Fired together rather than one after another, so the burst lands inside a single
+  // window. A sequential loop long enough to cross the ceiling was also long enough to
+  // cross a minute boundary, and the count it was testing reset underneath it.
+  const v9Uploads = await Promise.all(Array.from({ length: 130 }, (unused, index) => {
+    const body = new FormData();
+    body.append('file', new Blob([Uint8Array.from([0x25, 0x50, 0x44, 0x46])], { type: 'application/pdf' }), `rate-${index}.pdf`);
+    return req('/api/assets', { method: 'POST', body }).then((response) => response.status);
+  }));
+  check('an upload flood is throttled before it fills the store',
+    v9Uploads.includes(429), `statuses ${[...new Set(v9Uploads)].join(',')}`);
+  const v9Throttled = await req('/api/assets', { method: 'POST', body: (() => { const f = new FormData(); f.append('file', new Blob([Uint8Array.from([0x25, 0x50, 0x44, 0x46])], { type: 'application/pdf' }), 'over.pdf'); return f; })() });
+  check('a throttled write answers in the four-field contract',
+    v9Throttled.status === 429 && v9Throttled.json?.policy === 'rate_limited' && !!v9Throttled.json?.reason && !!v9Throttled.json?.recovery,
+    JSON.stringify(v9Throttled.json).slice(0, 130));
+  check('and says nothing was written', /Nothing was written/.test(v9Throttled.json?.recovery ?? ''), v9Throttled.json?.recovery);
+  }
+
   /* ---------- report ---------- */
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${'-'.repeat(60)}`);

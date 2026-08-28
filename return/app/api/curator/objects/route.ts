@@ -1,8 +1,7 @@
 import { createObject, recordActivity } from '@/db/queries';
 import { validateObjectDraft, type ObjectDraft } from '@/lib/community/object-input';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
-import { sessionFromRequest } from '@/lib/session';
-import { guarded, readJsonBody, refused } from '@/lib/http/input';
+import { guardedWrite, readJsonBody, refused } from '@/lib/http/input';
 
 /**
  * Registers a new collection record (FR-K5).
@@ -15,8 +14,8 @@ import { guarded, readJsonBody, refused } from '@/lib/http/input';
  * An agent never reaches this route. `register_object` on the tool surface produces a
  * proposal for a curator and creates nothing (FR-X3).
  */
-export const POST = guarded(async (request: Request) => {
-  const { role, museumId } = await sessionFromRequest(request);
+export const POST = guardedWrite(async (request: Request, session) => {
+  const { role, museumId } = session;
   if (role !== 'curator') {
     return Response.json({
       outcome: 'denied', policy: 'role_not_permitted',
