@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   CONTRIBUTION_KINDS, buildSteps, describeKinds, fieldsFor, missingFields, summariseDetail,
 } from './contribution.ts';
+import { MAX_TEXT } from '../domain/types.ts';
 import type { ContributionKind, KindDetail } from './contribution.ts';
 
 const detail = (kind: ContributionKind, values: Record<string, string> = {}): KindDetail => ({ kind, values });
@@ -89,4 +90,37 @@ test('a detail summary lists only the fields that were filled in', () => {
 test('a summary never leaks a field the kind does not declare', () => {
   const lines = summariseDetail(detail('Object information', { photographer: 'Someone' }));
   assert.ok(!lines.some((line) => line.includes('Someone')));
+});
+
+/* V7-5 — a field's ceiling belongs to the question it asks.
+   Every answer used to share the 4,000 characters of a prose body, so a date field
+   accepted four thousand characters and the form said nothing until the last step. The
+   form renders `maxLength` from these numbers and the route checks against them, so a
+   field declared without one, or with a prose ceiling on a one-line question, would put
+   the two back out of step. */
+test('every contribution field declares a ceiling', () => {
+  for (const kind of CONTRIBUTION_KINDS) {
+    for (const field of fieldsFor(kind)) {
+      if (field.type === 'files') continue;
+      assert.ok(field.max > 0, `${kind}: ${field.name} declares no ceiling`);
+    }
+  }
+});
+test('a one-line question is not given a prose ceiling', () => {
+  for (const kind of CONTRIBUTION_KINDS) {
+    for (const field of fieldsFor(kind)) {
+      if (field.type !== 'text') continue;
+      assert.ok(field.max <= MAX_TEXT.basis, `${kind}: ${field.name} accepts ${field.max} characters on one line`);
+    }
+  }
+});
+test('prose fields hold a body, and short ones hold less', () => {
+  const photograph = Object.fromEntries(fieldsFor('Photograph').map((field) => [field.name, field.max]));
+  assert.equal(photograph.caption, MAX_TEXT.body);
+  assert.equal(photograph.taken_when, MAX_TEXT.period);
+  assert.equal(photograph.taken_where, MAX_TEXT.origin);
+  assert.equal(photograph.photographer, MAX_TEXT.source);
+  const document = Object.fromEntries(fieldsFor('Document').map((field) => [field.name, field.max]));
+  assert.equal(document.document_type, MAX_TEXT.term);
+  assert.equal(document.summary, MAX_TEXT.body);
 });

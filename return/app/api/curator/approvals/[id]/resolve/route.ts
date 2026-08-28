@@ -4,10 +4,10 @@ import {
   canonicalJson, isDraftHashLegacyApprovalSnapshot, isLabelApprovalSnapshot, isLegacyLabelApprovalSnapshot,
   validateLabelApprovalIntegrity, type ApprovalEvidenceSnapshot,
 } from '@/lib/approval-snapshot';
-import type { Authority, Consent, Visibility } from '@/lib/domain/types';
+import { MAX_TEXT, type Authority, type Consent, type Visibility } from '@/lib/domain/types';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
 import { sessionFromRequest } from '@/lib/session';
-import { guarded } from '@/lib/http/input';
+import { guarded, readJsonBody, refused, takeText } from '@/lib/http/input';
 
 type PublicationTarget = {
   id: string;
@@ -75,10 +75,24 @@ export const POST = guarded(async (request: Request, { params }: { params: Promi
   if (role !== 'curator') return Response.json({ outcome: 'denied', risk: 'LOW', reason: 'Curator role required.', recovery: 'Switch to the curator workspace.' }, { status: 403 });
 
   const { id } = await params;
-  const body = await request.json().catch(() => ({})) as { action?: string; draft?: unknown; editReason?: unknown };
-  if (!['approved', 'approve_with_edit', 'rejected'].includes(body.action ?? '')) {
+  const parsed = await readJsonBody(request);
+  if (refused(parsed)) return parsed.refusal;
+  const body = parsed;
+  if (typeof body.action !== 'string' || !['approved', 'approve_with_edit', 'rejected'].includes(body.action)) {
     return invalid('Invalid resolution.', 'Choose approved, approve_with_edit, or rejected.');
   }
+  /**
+   * The edited label and the reason for editing it, checked like every other stored
+   * field (V7-1).
+   *
+   * This route publishes to the public record, and it was the one write route the F6
+   * pass gave the wrapper but never the reader: `draft` was type-checked and then
+   * written at whatever length it arrived, so a curator editing in the drawer published
+   * six thousand characters past the ceiling that `propose_label_update` enforces on the
+   * same text. The tool refused and the console published. Now both read one number.
+   */
+  const editReason = takeText(body.editReason, 'editReason', { max: MAX_TEXT.editReason, label: 'An edit reason' });
+  if (refused(editReason)) return editReason.refusal;
 
   const approval = await getApproval(museumId, id).catch(() => null);
   if (!approval) return Response.json({ outcome: 'invalid', field: 'approval_id', reason: 'No approval with that id exists in this workspace.', recovery: 'Call list_pending_approvals to see what is waiting.' }, { status: 404 });
@@ -127,7 +141,7 @@ export const POST = guarded(async (request: Request, { params }: { params: Promi
     const linked = linkedSubmissionUpdate(db, museumId, approval.object_id, evidenceIds, 'closed', now, id, 'rejected');
     const [decision] = await db.batch([
       db.prepare("UPDATE approvals SET status='rejected', resolution='rejected', verdict='rejected', edited_body=NULL, edit_reason=?, resolved_at=? WHERE museum_id=? AND id=? AND status='pending' AND expires_at>?")
-        .bind(typeof body.editReason === 'string' && body.editReason.trim() ? body.editReason.trim() : null, now, museumId, id, now),
+        .bind(editReason || null, now, museumId, id, now),
       ...(linked ? [linked] : []),
       db.prepare(`INSERT INTO activity (id,museum_id,actor,action,detail,created_at,actor_role,actor_type,tool,target,risk,policy_decision,result)
         SELECT ?,?,'Mina, Curator','rejected label revision',?,?,'curator_ui','human',?,?,'HIGH','denied','rejected'
@@ -142,7 +156,13 @@ export const POST = guarded(async (request: Request, { params }: { params: Promi
     return Response.json({ outcome: 'applied', id, status: 'rejected', resolution: 'rejected', edited: false, published: false, persisted: true });
   }
 
-  const draft = typeof body.draft === 'string' ? body.draft.trim() : approval.snapshot.trim();
+  // A draft the caller did not send means the proposal stands as written. A draft sent
+  // empty means the curator cleared the box, which is a different thing and is refused:
+  // publishing the original under an emptied editor would publish what they deleted.
+  const draftGiven = body.draft !== undefined && body.draft !== null;
+  const draft$ = takeText(body.draft, 'draft', { max: MAX_TEXT.draft, required: draftGiven, label: 'A public label' });
+  if (refused(draft$)) return draft$.refusal;
+  const draft = draft$ || approval.snapshot.trim();
   if (!draft) return invalid('An approved label cannot be empty.', 'Enter public label text or reject the proposal.');
   if (target.version !== approval.object_version || target.current_revision !== approval.object_version || !target.current_label_id) {
     return mismatch('The public object version or current label changed after this approval was requested.');
@@ -207,9 +227,7 @@ export const POST = guarded(async (request: Request, { params }: { params: Promi
 
   const edited = body.action === 'approve_with_edit' || draft !== approval.snapshot.trim();
   const resolution = edited ? 'approved_with_edit' : 'approved';
-  const editReason = edited
-    ? (typeof body.editReason === 'string' && body.editReason.trim() ? body.editReason.trim() : 'Curator edited the proposed label during approval.')
-    : null;
+  const recordedEditReason = edited ? (editReason || 'Curator edited the proposed label during approval.') : null;
   const revision = approval.object_version + 1;
   const publicationId = `LBL-${approval.object_id}-R${revision}`;
   const assertions = currentSnapshot?.assertions ?? (Array.isArray(legacySnapshot?.assertions) ? legacySnapshot.assertions : []);
@@ -235,7 +253,7 @@ export const POST = guarded(async (request: Request, { params }: { params: Promi
     db.prepare(`UPDATE approvals SET status=?,resolution=?,verdict='approved',edited_body=?,edit_reason=?,resolved_at=?
       WHERE museum_id=? AND id=? AND status='pending' AND expires_at>?
       AND EXISTS (SELECT 1 FROM objects WHERE museum_id=? AND id=? AND version=? AND current_label_id=?)`)
-      .bind(resolution, resolution, edited ? draft : null, editReason, now, museumId, id, now, museumId, approval.object_id, revision, publicationId),
+      .bind(resolution, resolution, edited ? draft : null, recordedEditReason, now, museumId, id, now, museumId, approval.object_id, revision, publicationId),
     ...(linked ? [linked] : []),
     db.prepare(`INSERT INTO activity (id,museum_id,actor,action,detail,created_at,actor_role,actor_type,tool,target,risk,policy_decision,result)
       SELECT ?,?,'Mina, Curator',?,?,?,'curator_ui','human',?,?,'HIGH','applied',?

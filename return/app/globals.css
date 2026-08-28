@@ -325,6 +325,10 @@ a { color:inherit; text-decoration:none; }
 .picker-filter { display:flex; flex-direction:column; gap:.3rem; margin-top:1rem; font-size:.65rem; color:var(--muted); }
 .picker-filter input { border:1px solid var(--line); background:transparent; padding:.5rem .6rem; font:inherit; font-size:.75rem; }
 .field-help { display:block; margin-top:.25rem; color:var(--muted); font-size:.62rem; line-height:1.45; }
+/* Appears only as a field's ceiling comes into range, so a contributor sees the limit
+   before it refuses rather than after the last step (V7-5). */
+.field-count { display:block; margin-top:.25rem; text-align:right; color:var(--muted); font-size:.6rem; font-variant-numeric:tabular-nums; }
+.field-count.at-limit { color:var(--oxide); }
 .attachment-field { margin-bottom:1.6rem; }
 .attachment-label { margin:0 0 .3rem; font-size:.72rem; font-weight:600; }
 .attachment-field input[type="file"] { display:block; margin:.5rem 0; font-size:.7rem; }

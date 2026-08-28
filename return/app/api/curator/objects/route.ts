@@ -1,8 +1,8 @@
 import { createObject, recordActivity } from '@/db/queries';
-import { missingObjectFields, objectFromDraft, type ObjectDraft } from '@/lib/community/object-input';
+import { validateObjectDraft, type ObjectDraft } from '@/lib/community/object-input';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
 import { sessionFromRequest } from '@/lib/session';
-import { guarded } from '@/lib/http/input';
+import { guarded, readJsonBody, refused } from '@/lib/http/input';
 
 /**
  * Registers a new collection record (FR-K5).
@@ -25,10 +25,21 @@ export const POST = guarded(async (request: Request) => {
     }, { status: 403 });
   }
 
-  const body = await request.json().catch(() => ({})) as ObjectDraft & { confirmed?: boolean };
-  const missing = missingObjectFields(body);
-  if (missing.length > 0) {
-    return Response.json({ outcome: 'invalid', field: 'record', reason: `${missing[0]} is required.`, recovery: 'Complete the record before registering it.' }, { status: 400 });
+  const parsed = await readJsonBody(request);
+  if (refused(parsed)) return parsed.refusal;
+  const body = parsed as ObjectDraft & { confirmed?: boolean };
+
+  /**
+   * The whole record, checked before the gateway is asked about it (V7-3).
+   *
+   * The refusal names the field it is about. This route used to answer `field: "record"`
+   * for every problem, which told a caller that something in a nine-field form was wrong
+   * and left them to find out which — the one refusal on this system that did not say
+   * what to fix.
+   */
+  const validated = validateObjectDraft(body);
+  if (!validated.ok) {
+    return Response.json({ outcome: 'invalid', field: validated.field, reason: validated.reason, recovery: validated.recovery }, { status: 400 });
   }
 
   const policy = evaluatePolicy({ actor: 'curator_ui', action: 'register_object', museumMatch: true });
@@ -43,9 +54,7 @@ export const POST = guarded(async (request: Request) => {
     }, { status: 409 });
   }
 
-  const input = objectFromDraft(body);
-  if (!input) return Response.json({ outcome: 'invalid', field: 'title', reason: 'The title cannot be turned into a record id.', recovery: 'Use a title with letters or numbers in it.' }, { status: 400 });
-
+  const input = validated.input;
   const result = await createObject(museumId, input, 'Mina, Curator');
   if (!result.created) {
     return Response.json({ outcome: 'invalid', field: 'accession', reason: `A record already exists as ${result.clash}.`, recovery: 'Use a different title and accession number.' }, { status: 409 });

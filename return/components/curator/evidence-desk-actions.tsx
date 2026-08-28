@@ -2,6 +2,8 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { MAX_TEXT } from '@/lib/domain/types';
+import { LimitedTextarea } from '@/components/shared/limited-field';
 
 export function EvidenceDeskActions({ submissionId, objectId, hasPendingApproval, askedCount }: {
   submissionId: string; objectId: string; hasPendingApproval: boolean; askedCount: number;
@@ -41,7 +43,9 @@ export function EvidenceDeskActions({ submissionId, objectId, hasPendingApproval
         <div className="clarify-box">
           <label>
             Question for the contributor
-            <textarea rows={3} value={question} onChange={(event) => setQuestion(event.target.value)} />
+            {/* The ceiling the route checks, so a question cannot be written past what
+                the contributor will be able to read back (V7-5). */}
+            <LimitedTextarea rows={3} value={question} max={MAX_TEXT.question} onValueChange={setQuestion} />
           </label>
           <div className="clarify-actions">
             <button type="button" onClick={() => setAsking(false)}>Cancel</button>

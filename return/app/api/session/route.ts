@@ -1,6 +1,7 @@
 import {
   appendSessionCookies, sessionCookieHeaders, sessionFromRequest, type Role,
 } from '@/lib/session';
+import { readJsonBody, refused } from '@/lib/http/input';
 
 async function responseFor(request: Request, role?: Role) {
   const current = await sessionFromRequest(request);
@@ -23,7 +24,9 @@ export async function GET(request: Request) {
  * consent. An absent role still means `community`: that is a default, not a correction.
  */
 export async function POST(request: Request) {
-  const body = await request.json().catch(() => ({})) as { role?: string };
+  const parsed = await readJsonBody(request);
+  if (refused(parsed)) return parsed.refusal;
+  const body = parsed as { role?: string };
   if (body.role !== undefined && body.role !== 'curator' && body.role !== 'community') {
     return Response.json({
       outcome: 'invalid', field: 'role',

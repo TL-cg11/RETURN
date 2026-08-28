@@ -1082,6 +1082,195 @@ async function main() {
   const f6Summary = await tool('get_collection_summary', {});
   check('the summary still counts contributions', typeof f6Summary.json?.total_submissions === 'number', JSON.stringify(f6Summary.json).slice(0, 90));
   await setRole('community');
+  /* ---------- 17. the write-route audit (FIX_REQUEST_7.md) ---------- */
+  /**
+   * The previous round closed the input class on the routes it had found, and the two it
+   * had not — the approval resolver and the referral resolver — published an unbounded
+   * label and filed `[object Object]` in the activity record. The checks that were
+   * supposed to catch that read submission titles only.
+   *
+   * These are written against the surface rather than against a route: every path that
+   * writes text, every field, and the public pages those fields reach. A new write route
+   * that skips the shared reader fails here without anyone adding a check for it.
+   */
+  section('write-route audit');
+  await post('/api/reset');
+  await setRole('curator');
+
+  /* V7-1 — the label a curator edits in the drawer has the ceiling the tool enforces. */
+  const v7Proposal = await tool('propose_label_update', { object_id: 'moonbird-mask', draft: 'Moonbird Mask. Ceiling probe.', evidence_ids: ['EV-068', 'EV-059'] });
+  const v7ApprovalId = v7Proposal.json?.approval_id;
+  check('a proposal is waiting to be resolved', !!v7ApprovalId, JSON.stringify(v7Proposal.json).slice(0, 110));
+  const v7LongDraft = await post(`/api/curator/approvals/${v7ApprovalId}/resolve`, { action: 'approve_with_edit', draft: 'x'.repeat(6001) });
+  check('an over-long edited label is refused at approval', v7LongDraft.status === 400 && v7LongDraft.json?.field === 'draft', JSON.stringify(v7LongDraft.json).slice(0, 130));
+  const v7WrongDraft = await post(`/api/curator/approvals/${v7ApprovalId}/resolve`, { action: 'approved', draft: { a: 1 } });
+  check('a non-text edited label is refused rather than coerced', v7WrongDraft.status === 400 && v7WrongDraft.json?.field === 'draft', JSON.stringify(v7WrongDraft.json).slice(0, 130));
+  const v7LongReason = await post(`/api/curator/approvals/${v7ApprovalId}/resolve`, { action: 'approve_with_edit', draft: 'Moonbird Mask. Edited.', editReason: 'r'.repeat(501) });
+  check('an over-long edit reason is refused', v7LongReason.status === 400 && v7LongReason.json?.field === 'editReason', JSON.stringify(v7LongReason.json).slice(0, 130));
+  const v7EmptyDraft = await post(`/api/curator/approvals/${v7ApprovalId}/resolve`, { action: 'approved', draft: '   ' });
+  check('an emptied editor is refused, not read as approving the original', v7EmptyDraft.status === 400 && v7EmptyDraft.json?.field === 'draft', JSON.stringify(v7EmptyDraft.json).slice(0, 130));
+  const v7Approved = await post(`/api/curator/approvals/${v7ApprovalId}/resolve`, { action: 'approved', draft: 'Moonbird Mask. Ceiling probe.' });
+  check('a label within the ceiling still publishes', v7Approved.status === 200 && v7Approved.json?.published === true, JSON.stringify(v7Approved.json).slice(0, 130));
+
+  /* V7-2 — a referral note is read, not coerced. */
+  const v7Referral = await tool('open_return_review', { object_id: 'moonbird-mask', basis: 'Referral probe for the note field.', evidence_ids: ['EV-059'] });
+  const v7EscalationId = v7Referral.json?.escalation_id;
+  check('a refused review opens a referral', !!v7EscalationId, JSON.stringify(v7Referral.json).slice(0, 110));
+  const v7WrongNote = await post(`/api/curator/escalations/${v7EscalationId}/resolve`, { action: 'reviewed', note: { nested: 'object' } });
+  check('a non-text referral note is refused rather than coerced', v7WrongNote.status === 400 && v7WrongNote.json?.field === 'note', JSON.stringify(v7WrongNote.json).slice(0, 130));
+  const v7LongNote = await post(`/api/curator/escalations/${v7EscalationId}/resolve`, { action: 'reviewed', note: 'n'.repeat(2001) });
+  check('an over-long referral note is refused', v7LongNote.status === 400 && v7LongNote.json?.field === 'note', JSON.stringify(v7LongNote.json).slice(0, 130));
+  const v7GoodNote = await post(`/api/curator/escalations/${v7EscalationId}/resolve`, { action: 'reviewed', note: 'Taken to the stewardship committee.' });
+  check('a referral still closes with a note within the ceiling', v7GoodNote.status === 200 && v7GoodNote.json?.resolved === true, JSON.stringify(v7GoodNote.json).slice(0, 110));
+
+  /* V7-3 — the console names the field it refuses, and refuses what the tool refuses. */
+  const v7Record = { confirmed: true, title: 'Audit probe object', accession: 'RT.9.AU', period: '1930', material: 'Wood', origin: 'Aru', label: 'A probe label.' };
+  const v7RecordProbes = [
+    ['title', 'y'.repeat(141)], ['title', { a: 1 }], ['accession', 'A'.repeat(61)], ['accession', 5],
+    ['period', 'p'.repeat(61)], ['material', { a: 1 }], ['origin', ['a']], ['label', 'l'.repeat(6001)],
+    ['description', 'd'.repeat(4001)], ['objectType', 't'.repeat(81)],
+  ];
+  const v7Unnamed = [];
+  for (const [field, value] of v7RecordProbes) {
+    const response = await post('/api/curator/objects', { ...v7Record, accession: `RT.9.${field.slice(0, 3)}`, [field]: value });
+    if (response.status !== 400 || response.json?.field !== field) v7Unnamed.push(`${field} → ${response.status} ${response.json?.field}`);
+  }
+  check('the record console refuses every bad field by name', v7Unnamed.length === 0, v7Unnamed.join(' | '));
+  const v7BadQuestions = await post('/api/curator/objects', { ...v7Record, accession: 'RT.9.QN', questions: [{ a: 1 }] });
+  check('a non-text open question is refused rather than coerced', v7BadQuestions.status === 400 && v7BadQuestions.json?.field === 'questions', JSON.stringify(v7BadQuestions.json).slice(0, 130));
+
+  /* V7-4 — nothing is stored shorter than it arrived. */
+  await setRole('community');
+  const v7Detail = 'd'.repeat(4001);
+  const v7LongDetail = await post('/api/community/evidence', { objectId: 'moonbird-mask', title: 'Detail ceiling probe', kinds: ['Object information'], details: [{ kind: 'Object information', values: { claim: v7Detail } }] });
+  check('an over-long contribution answer is refused, not cut', v7LongDetail.status === 400 && /claim/.test(v7LongDetail.json?.field ?? ''), JSON.stringify(v7LongDetail.json).slice(0, 150));
+  const v7ShortField = await post('/api/community/evidence', { objectId: 'moonbird-mask', title: 'Field ceiling probe', kinds: ['Photograph'], details: [{ kind: 'Photograph', values: { caption: 'A caption.', taken_when: 'w'.repeat(61) } }] });
+  check('a date answer is held to a date ceiling, not a prose one', v7ShortField.status === 400 && /taken_when/.test(v7ShortField.json?.field ?? ''), JSON.stringify(v7ShortField.json).slice(0, 150));
+  const v7LongAlt = await post('/api/community/evidence', { objectId: 'moonbird-mask', title: 'Alt ceiling probe', kinds: ['Object information'], details: [{ kind: 'Object information', values: { claim: 'A claim.' } }], assetAlts: { 'AST-NONE': 'a'.repeat(301) } });
+  check('over-long alternative text is refused, not cut', v7LongAlt.status === 400 && v7LongAlt.json?.field === 'assetAlts', JSON.stringify(v7LongAlt.json).slice(0, 150));
+  const v7NamedFile = new FormData();
+  v7NamedFile.append('file', new Blob([Uint8Array.from([0x25, 0x50, 0x44, 0x46])], { type: 'application/pdf' }), `${'n'.repeat(200)}.pdf`);
+  const v7LongName = await req('/api/assets', { method: 'POST', body: v7NamedFile });
+  check('an over-long file name is refused, not cut', v7LongName.status === 400 && v7LongName.json?.field === 'file', JSON.stringify(v7LongName.json).slice(0, 150));
+  const v7AltForm = new FormData();
+  v7AltForm.append('file', new Blob([Uint8Array.from([0x25, 0x50, 0x44, 0x46])], { type: 'application/pdf' }), 'named.pdf');
+  v7AltForm.append('alt_text', 'a'.repeat(301));
+  const v7UploadAlt = await req('/api/assets', { method: 'POST', body: v7AltForm });
+  check('over-long alternative text on an upload is refused, not cut', v7UploadAlt.status === 400 && v7UploadAlt.json?.field === 'alt_text', JSON.stringify(v7UploadAlt.json).slice(0, 150));
+  const v7StoredForm = new FormData();
+  v7StoredForm.append('file', new Blob([Uint8Array.from([0x25, 0x50, 0x44, 0x46])], { type: 'application/pdf' }), 'kept-whole.pdf');
+  v7StoredForm.append('alt_text', 'a'.repeat(300));
+  const v7Stored = await req('/api/assets', { method: 'POST', body: v7StoredForm });
+  check('a value at the ceiling is stored whole', v7Stored.status === 200 && v7Stored.json?.file_name === 'kept-whole.pdf', JSON.stringify(v7Stored.json).slice(0, 130));
+
+  /* V7-7 — every argument the tool surface reads has a ceiling, ids included.
+     The stored fields were capped last round and the lookup keys were not, and
+     `request_clarification` read its question with a bare type check like an id — so a
+     question of any length was stored and read back by the contributor who has to
+     answer it. This walks every argument of every tool rather than the ones that
+     happened to be remembered. */
+  await setRole('curator');
+  const v7ToolArgs = [
+    ['request_clarification', 'question', 'q'.repeat(401)],
+    ['request_clarification', 'submission_id', 'i'.repeat(121)],
+    ['propose_label_update', 'draft', 'd'.repeat(6001)],
+    ['propose_label_update', 'object_id', 'o'.repeat(121)],
+    ['open_return_review', 'basis', 'b'.repeat(2001)],
+    ['register_object', 'title', 't'.repeat(141)],
+    ['register_object', 'accession', 'a'.repeat(61)],
+    ['check_approval', 'approval_id', 'p'.repeat(121)],
+    ['get_review_case', 'case_id', 'c'.repeat(121)],
+    ['get_asset_detail', 'asset_id', 's'.repeat(121)],
+    ['list_objects', 'status', 's'.repeat(81)],
+    ['list_submissions', 'status', 's'.repeat(81)],
+  ];
+  const v7ToolUncapped = [];
+  for (const [name, field, value] of v7ToolArgs) {
+    const response = await tool(name, { object_id: 'moonbird-mask', submission_id: 'SUB-1041', draft: 'A draft.', basis: 'A basis.', title: 'A title', accession: 'RT.9.X', question: 'A question?', [field]: value });
+    if (response.json?.outcome !== 'invalid' || response.json?.field !== field) {
+      v7ToolUncapped.push(`${name}/${field} → ${response.status} ${response.json?.outcome} ${response.json?.field}`);
+    }
+  }
+  check('every tool argument is held to a ceiling, ids and filters included', v7ToolUncapped.length === 0, v7ToolUncapped.join(' | '));
+  const v7NonText = [];
+  for (const [name, field] of v7ToolArgs) {
+    const response = await tool(name, { object_id: 'moonbird-mask', submission_id: 'SUB-1041', draft: 'A draft.', basis: 'A basis.', title: 'A title', accession: 'RT.9.X', question: 'A question?', [field]: { a: 1 } });
+    if (response.json?.outcome !== 'invalid' || response.json?.field !== field) {
+      v7NonText.push(`${name}/${field} → ${response.status} ${response.json?.outcome} ${response.json?.field}`);
+    }
+  }
+  check('every tool argument refuses a non-text value rather than ignoring it', v7NonText.length === 0, v7NonText.join(' | '));
+  /* V7-8 — a body nobody can parse is not an empty body.
+     `request.json().catch(() => ({}))` reads a malformed request as one that carried no
+     fields, and on the asset route `publish` then defaults to true — so a broken request
+     published material. Every route now reads its body through the shared reader. */
+  // Each route is probed in the role that can reach its body, so a role refusal cannot
+  // stand in for the body refusal this is looking for.
+  const v7Malformed = [
+    ['curator', '/api/session'],
+    ['curator', '/api/curator/objects'],
+    ['community', '/api/community/evidence'],
+  ];
+  const v7Swallowed = [];
+  for (const [role, path] of v7Malformed) {
+    await setRole(role);
+    const response = await req(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{not json' });
+    if (response.status !== 400 || response.json?.field !== 'body') v7Swallowed.push(`${path} as ${role} → ${response.status} ${response.json?.field}`);
+  }
+  check('a malformed body is refused, never read as an empty one', v7Swallowed.length === 0, v7Swallowed.join(' | '));
+  await setRole('curator');
+  const v7PublishBad = await req('/api/curator/assets/AST-NONE/publish', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{not json' });
+  check('a malformed body does not publish an asset by default', v7PublishBad.status === 400 && v7PublishBad.json?.field === 'body', JSON.stringify(v7PublishBad.json).slice(0, 130));
+  const v7PublishType = await post('/api/curator/assets/AST-NONE/publish', { publish: 'yes' });
+  check('a non-boolean publish flag is refused rather than read as true', v7PublishType.status === 400 && v7PublishType.json?.field === 'publish', JSON.stringify(v7PublishType.json).slice(0, 130));
+  await setRole('community');
+  const v7BadAlts = await post('/api/community/evidence', { objectId: 'moonbird-mask', title: 'Alt shape probe', kinds: ['Object information'], details: [{ kind: 'Object information', values: { claim: 'A claim.' } }], assetAlts: 'not-a-map' });
+  check('alternative text in the wrong shape is refused, not dropped', v7BadAlts.status === 400 && v7BadAlts.json?.field === 'assetAlts', JSON.stringify(v7BadAlts.json).slice(0, 130));
+  await setRole('curator');
+  /* V7-6 — the check that missed this reads the pages a coerced value would reach. */
+  await setRole('curator');
+  const v7Pages = ['/', '/curator', '/curator/activity', '/curator/submissions', '/curator/objects', ...OBJECT_IDS.map((id) => `/objects/${id}`)];
+  const v7Coerced = [];
+  for (const path of v7Pages) {
+    const page = await get(path);
+    if (page.text.includes('[object Object]')) v7Coerced.push(path);
+  }
+  check('no page anywhere renders a stringified object', v7Coerced.length === 0, v7Coerced.join(' | '));
+
+  /* V7-5 — the form declares the ceilings the routes enforce, so nothing is refused late.
+     The first step of the contribution form is server-rendered, so the ceilings it carries
+     are in the served HTML and this cannot pass by finding nothing. The per-kind ceilings
+     are asserted against the declaration itself in `lib/community/contribution.test.ts`,
+     and against the server one field at a time below. */
+  await setRole('community');
+  const v7Form = await get('/contribute?object=moonbird-mask');
+  const v7FormCeilings = [...new Set([...v7Form.text.matchAll(/maxLength="(\d+)"/gi)].map((hit) => Number(hit[1])))];
+  check('the contribution form declares its ceilings in the page itself',
+    v7FormCeilings.includes(140) && v7FormCeilings.includes(120),
+    `declared ${v7FormCeilings.join(', ') || 'nothing'}`);
+
+  /* Each kind of question is held to its own ceiling, one field at a time, so a new field
+     that reuses the prose ceiling for a date is caught here rather than in a browser. */
+  const v7PerField = [
+    ['Photograph', 'caption', 4001], ['Photograph', 'taken_when', 61], ['Photograph', 'taken_where', 201],
+    ['Photograph', 'photographer', 121], ['Photograph', 'reverse', 4001],
+    ['Document', 'document_type', 81], ['Document', 'issuer', 121], ['Document', 'issued_when', 61], ['Document', 'summary', 4001],
+    ['Oral history', 'transcript', 4001], ['Oral history', 'speaker', 121], ['Oral history', 'relationship', 81],
+    ['Oral history', 'language', 81], ['Oral history', 'recorded_where', 201],
+    ['Object information', 'claim', 4001], ['Object information', 'basis', 2001],
+  ];
+  const v7Uncapped = [];
+  for (const [kind, field, length] of v7PerField) {
+    const response = await post('/api/community/evidence', {
+      objectId: 'moonbird-mask', title: 'Per-field ceiling probe', kinds: [kind],
+      details: [{ kind, values: { [field]: 'x'.repeat(length) } }],
+    });
+    if (response.status !== 400 || !String(response.json?.field ?? '').endsWith(field)) {
+      v7Uncapped.push(`${kind}/${field} at ${length} → ${response.status} ${response.json?.field}`);
+    }
+  }
+  check('every contribution field is held to its own ceiling', v7Uncapped.length === 0, v7Uncapped.join(' | '));
+  await setRole('community');
   /* ---------- report ---------- */
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${'-'.repeat(60)}`);

@@ -4,7 +4,8 @@ import { putAsset, storageKeyFor } from '@/lib/assets/storage';
 import { readImageDimensions } from '@/lib/assets/image-dimensions';
 import type { ImageDimensions } from '@/lib/assets/image-dimensions';
 import { sessionFromRequest } from '@/lib/session';
-import { guarded } from '@/lib/http/input';
+import { MAX_TEXT } from '@/lib/domain/types';
+import { guarded, refuse, refused, takeText } from '@/lib/http/input';
 
 export const dynamic = 'force-dynamic';
 
@@ -38,13 +39,33 @@ export const POST = guarded(async (request: Request) => {
     }, { status: 400 });
   }
 
-  const submissionId = typeof form?.get('submission_id') === 'string' ? String(form.get('submission_id')).trim() : '';
+  const submissionId$ = takeText(form?.get('submission_id'), 'submission_id', { max: MAX_TEXT.id, label: 'A contribution id' });
+  if (refused(submissionId$)) return submissionId$.refusal;
+  const submissionId = submissionId$;
   if (submissionId && await countSubmissionAssets(museumId, submissionId) >= MAX_ASSETS_PER_CONTRIBUTION) {
     return Response.json({ outcome: 'invalid', field: 'file', reason: `A contribution may carry at most ${MAX_ASSETS_PER_CONTRIBUTION} files.`, recovery: 'Remove an attachment before adding another.' }, { status: 400 });
   }
 
+  /**
+   * The name, the description, and the caption, refused rather than cut (V7-4).
+   *
+   * All three were sliced silently: a two-hundred-character file name was stored at a
+   * hundred and twenty, and alt text written for a screen reader arrived three hundred
+   * characters long however much had been typed. SCHEMA §30 says a ceiling refuses and
+   * does not truncate, and these were the last three places that still did.
+   */
+  const rawName = file.name || 'upload';
+  if (rawName.length > MAX_TEXT.fileName) {
+    return refuse('file', `A file name is at most ${MAX_TEXT.fileName} characters, and this one is ${rawName.length}.`,
+      'Rename the file and upload it again.').refusal;
+  }
+  const altText = takeText(form?.get('alt_text'), 'alt_text', { max: MAX_TEXT.altText, label: 'Alternative text' });
+  if (refused(altText)) return altText.refusal;
+  const caption = takeText(form?.get('caption'), 'caption', { max: MAX_TEXT.caption, label: 'A caption' });
+  if (refused(caption)) return caption.refusal;
+
   const id = `AST-${crypto.randomUUID().slice(0, 12).toUpperCase()}`;
-  const fileName = (file.name || 'upload').slice(0, 120);
+  const fileName = rawName;
   const storageKey = storageKeyFor(museumId, id, fileName);
   const now = Date.now();
   let dimensions: ImageDimensions | null = null;
@@ -56,8 +77,8 @@ export const POST = guarded(async (request: Request) => {
     await insertAsset(museumId, {
       id, object_id: null, submission_id: submissionId || null, evidence_id: null,
       kind: allowed.kind, content_type: file.type, storage_key: storageKey, file_name: fileName,
-      alt_text: typeof form?.get('alt_text') === 'string' ? String(form.get('alt_text')).slice(0, 300) : '',
-      caption: typeof form?.get('caption') === 'string' ? String(form.get('caption')).slice(0, 300) : '',
+      alt_text: altText,
+      caption,
       visibility: 'restricted', consent: 'private',
       byte_size: file.size, width: dimensions?.width ?? null, height: dimensions?.height ?? null, sort_order: now,
       uploaded_by: role === 'curator' ? 'Curator' : 'Community contributor',

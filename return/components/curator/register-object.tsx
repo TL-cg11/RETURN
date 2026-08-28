@@ -1,9 +1,15 @@
 'use client';
 
 import { useState } from 'react';
-import { OBJECT_TONES, RECORD_STATUSES, missingObjectFields, slugFor, type ObjectDraft } from '@/lib/community/object-input';
+import { OBJECT_TONES, RECORD_STATUSES, missingObjectFields, objectFieldMax, slugFor, type ObjectDraft, type ObjectFieldKey } from '@/lib/community/object-input';
+import { LimitedInput, LimitedTextarea } from '@/components/shared/limited-field';
 
-const FIELDS: { key: keyof ObjectDraft; label: string; placeholder?: string; required?: boolean }[] = [
+/**
+ * The single-line fields, in the order a curator fills them in. Each one's ceiling comes
+ * from `OBJECT_FIELDS`, the same table the route checks against, so the form stops where
+ * the server would have refused (V7-5).
+ */
+const FIELDS: { key: ObjectFieldKey; label: string; placeholder?: string; required?: boolean }[] = [
   { key: 'title', label: 'Title', placeholder: 'Harbour Signal Lamp', required: true },
   { key: 'accession', label: 'Accession number', placeholder: 'RT.1972.031', required: true },
   { key: 'period', label: 'Date or period', placeholder: 'c. 1910', required: true },
@@ -31,7 +37,7 @@ export function RegisterObject() {
 
   const set = (key: keyof ObjectDraft, value: string) => setDraft((now) => ({ ...now, [key]: value }));
   const missing = missingObjectFields(draft);
-  const slug = slugFor(String(draft.title ?? ''));
+  const slug = slugFor(draft.title ?? '');
 
   async function submit(confirmed: boolean) {
     setError('');
@@ -100,7 +106,10 @@ export function RegisterObject() {
             {FIELDS.map((field) => (
               <label key={field.key}>
                 <span className="field-name">{field.label}{field.required && <b aria-hidden="true"> *</b>}</span>
-                <input value={String(draft[field.key] ?? '')} placeholder={field.placeholder} onChange={(event) => set(field.key, event.target.value)} />
+                <LimitedInput
+                  value={draft[field.key] ?? ''} max={objectFieldMax(field.key)} placeholder={field.placeholder}
+                  onValueChange={(value) => set(field.key, value)}
+                />
               </label>
             ))}
             <label>
@@ -118,11 +127,19 @@ export function RegisterObject() {
           </div>
           <label className="register-wide">
             Description
-            <textarea rows={2} value={String(draft.description ?? '')} placeholder="What the record holds, and what is not yet known about it." onChange={(event) => set('description', event.target.value)} />
+            <LimitedTextarea
+              rows={2} value={draft.description ?? ''} max={objectFieldMax('description')}
+              placeholder="What the record holds, and what is not yet known about it."
+              onValueChange={(value) => set('description', value)}
+            />
           </label>
           <label className="register-wide">
             <span className="field-name">Public label<b aria-hidden="true"> *</b></span>
-            <textarea rows={3} value={String(draft.label ?? '')} placeholder="The sentence the public will read first. It can be revised afterwards." onChange={(event) => set('label', event.target.value)} />
+            <LimitedTextarea
+              rows={3} value={draft.label ?? ''} max={objectFieldMax('label')}
+              placeholder="The sentence the public will read first. It can be revised afterwards."
+              onValueChange={(value) => set('label', value)}
+            />
           </label>
           {slug && <p className="form-help">Public address · /objects/{slug}</p>}
           {error && <p className="clarify-result" role="alert">{error}</p>}

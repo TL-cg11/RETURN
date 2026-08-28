@@ -7,6 +7,10 @@
  * led to the same four fields.
  */
 
+// Relative, with the extension: this module is imported by `node --test`, which resolves
+// neither the `@/` alias nor an extensionless path.
+import { MAX_TEXT } from '../domain/types.ts';
+
 export const CONTRIBUTION_KINDS = ['Photograph', 'Document', 'Oral history', 'Object information'] as const;
 export type ContributionKind = typeof CONTRIBUTION_KINDS[number];
 
@@ -15,6 +19,16 @@ export type FieldSpec = {
   name: string;
   label: string;
   type: FieldType;
+  /**
+   * What this field will hold, in characters.
+   *
+   * Every value used to share one ceiling — the 4,000 of a prose body — so a date field
+   * accepted four thousand characters and the form said nothing until the very end. The
+   * ceiling belongs to the question being asked: a date is not a paragraph. The form
+   * renders `maxLength` from this number and the route checks against the same one, so
+   * a contributor cannot type something the server will later refuse (V7-5).
+   */
+  max: number;
   required?: boolean;
   help?: string;
   placeholder?: string;
@@ -22,32 +36,32 @@ export type FieldSpec = {
 
 const FIELDS: Record<ContributionKind, FieldSpec[]> = {
   Photograph: [
-    { name: 'files', label: 'Photographs', type: 'files', help: 'You may attach several images of the same material.' },
-    { name: 'caption', label: 'What does it show?', type: 'textarea', required: true, placeholder: 'Describe what is visible in the photograph.' },
-    { name: 'taken_when', label: 'When was it taken?', type: 'text', placeholder: 'August 1959, or “sometime in the 1960s”' },
-    { name: 'taken_where', label: 'Where was it taken?', type: 'text', placeholder: 'Aru village' },
-    { name: 'photographer', label: 'Who took it?', type: 'text', help: 'Say if this is known rather than confirmed. The museum records the difference.' },
-    { name: 'reverse', label: 'Anything written on the back?', type: 'textarea', placeholder: 'Transcribe any inscription, stamp, or label.' },
+    { name: 'files', label: 'Photographs', type: 'files', max: 0, help: 'You may attach several images of the same material.' },
+    { name: 'caption', label: 'What does it show?', type: 'textarea', max: MAX_TEXT.body, required: true, placeholder: 'Describe what is visible in the photograph.' },
+    { name: 'taken_when', label: 'When was it taken?', type: 'text', max: MAX_TEXT.period, placeholder: 'August 1959, or “sometime in the 1960s”' },
+    { name: 'taken_where', label: 'Where was it taken?', type: 'text', max: MAX_TEXT.origin, placeholder: 'Aru village' },
+    { name: 'photographer', label: 'Who took it?', type: 'text', max: MAX_TEXT.source, help: 'Say if this is known rather than confirmed. The museum records the difference.' },
+    { name: 'reverse', label: 'Anything written on the back?', type: 'textarea', max: MAX_TEXT.body, placeholder: 'Transcribe any inscription, stamp, or label.' },
   ],
   Document: [
-    { name: 'files', label: 'Document files', type: 'files', help: 'Scans or photographs of the pages, as PDF or image.' },
-    { name: 'document_type', label: 'What kind of document is it?', type: 'text', required: true, placeholder: 'Invoice, registry entry, catalog page, letter' },
-    { name: 'issuer', label: 'Who issued or wrote it?', type: 'text' },
-    { name: 'issued_when', label: 'When was it issued?', type: 'text', placeholder: '18 June 1968' },
-    { name: 'summary', label: 'What does it say?', type: 'textarea', placeholder: 'Summarise the parts that relate to this object.' },
+    { name: 'files', label: 'Document files', type: 'files', max: 0, help: 'Scans or photographs of the pages, as PDF or image.' },
+    { name: 'document_type', label: 'What kind of document is it?', type: 'text', max: MAX_TEXT.term, required: true, placeholder: 'Invoice, registry entry, catalog page, letter' },
+    { name: 'issuer', label: 'Who issued or wrote it?', type: 'text', max: MAX_TEXT.source },
+    { name: 'issued_when', label: 'When was it issued?', type: 'text', max: MAX_TEXT.period, placeholder: '18 June 1968' },
+    { name: 'summary', label: 'What does it say?', type: 'textarea', max: MAX_TEXT.body, placeholder: 'Summarise the parts that relate to this object.' },
   ],
   'Oral history': [
-    { name: 'files', label: 'Recording', type: 'files', help: 'Audio is optional. A transcript alone is a complete contribution.' },
-    { name: 'transcript', label: 'Transcript or summary', type: 'textarea', required: true, placeholder: 'What was said, in the speaker’s own words where possible.' },
-    { name: 'speaker', label: 'Who is speaking?', type: 'text', help: 'A name, or a description if the speaker prefers not to be named.' },
-    { name: 'relationship', label: 'Their relationship to the object', type: 'text', placeholder: 'Family member, community elder, former custodian' },
-    { name: 'recorded_when', label: 'When was it recorded?', type: 'text' },
-    { name: 'recorded_where', label: 'Where was it recorded?', type: 'text' },
-    { name: 'language', label: 'Language spoken', type: 'text' },
+    { name: 'files', label: 'Recording', type: 'files', max: 0, help: 'Audio is optional. A transcript alone is a complete contribution.' },
+    { name: 'transcript', label: 'Transcript or summary', type: 'textarea', max: MAX_TEXT.body, required: true, placeholder: 'What was said, in the speaker’s own words where possible.' },
+    { name: 'speaker', label: 'Who is speaking?', type: 'text', max: MAX_TEXT.source, help: 'A name, or a description if the speaker prefers not to be named.' },
+    { name: 'relationship', label: 'Their relationship to the object', type: 'text', max: MAX_TEXT.term, placeholder: 'Family member, community elder, former custodian' },
+    { name: 'recorded_when', label: 'When was it recorded?', type: 'text', max: MAX_TEXT.period },
+    { name: 'recorded_where', label: 'Where was it recorded?', type: 'text', max: MAX_TEXT.origin },
+    { name: 'language', label: 'Language spoken', type: 'text', max: MAX_TEXT.term },
   ],
   'Object information': [
-    { name: 'claim', label: 'What would you like the record to say?', type: 'textarea', required: true, placeholder: 'State it as a claim rather than as established fact.' },
-    { name: 'basis', label: 'What is this based on?', type: 'text', help: 'Personal knowledge, community practice, published work, another record.' },
+    { name: 'claim', label: 'What would you like the record to say?', type: 'textarea', max: MAX_TEXT.body, required: true, placeholder: 'State it as a claim rather than as established fact.' },
+    { name: 'basis', label: 'What is this based on?', type: 'text', max: MAX_TEXT.basis, help: 'Personal knowledge, community practice, published work, another record.' },
   ],
 };
 

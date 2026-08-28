@@ -7,6 +7,8 @@ import {
   type ContributionKind, type KindDetail,
 } from '@/lib/community/contribution';
 import { MAX_ASSETS_PER_CONTRIBUTION } from '@/lib/assets/access';
+import { MAX_TEXT } from '@/lib/domain/types';
+import { LimitedInput, LimitedTextarea } from '@/components/shared/limited-field';
 
 const CONSENT_OPTIONS = [
   ['public_attributed', 'Public, with my name', 'The museum may quote and display this with attribution.'],
@@ -188,8 +190,10 @@ export function ContributionForm({ objectId, objects, fromObject }: { objectId: 
                 </button>
               ))}
             </div>
-            <label>Short title<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="1959 Aru village photograph" required /></label>
-            <label>Where did this come from?<input value={source} onChange={(event) => setSource(event.target.value)} placeholder="Family archive of Ena Varo" /></label>
+            {/* Every ceiling in this form is the one the route checks against, so nothing
+                a contributor can type here is refused five steps later (V7-5). */}
+            <label>Short title<LimitedInput value={title} max={MAX_TEXT.title} onValueChange={setTitle} placeholder="1959 Aru village photograph" required /></label>
+            <label>Where did this come from?<LimitedInput value={source} max={MAX_TEXT.source} onValueChange={setSource} placeholder="Family archive of Ena Varo" /></label>
           </>
         )}
 
@@ -220,10 +224,10 @@ export function ContributionForm({ objectId, objects, fromObject }: { objectId: 
                           {item.kind === 'image' && (
                             <label className="attachment-alt">
                               Describe this image for someone who cannot see it
-                              <input
-                                value={item.alt}
+                              <LimitedInput
+                                value={item.alt} max={MAX_TEXT.altText}
                                 placeholder="A carved mask held by two people outside a meeting house"
-                                onChange={(event) => setAttachments((now) => now.map((entry) => entry.id === item.id ? { ...entry, alt: event.target.value } : entry))}
+                                onValueChange={(value) => setAttachments((now) => now.map((entry) => entry.id === item.id ? { ...entry, alt: value } : entry))}
                               />
                             </label>
                           )}
@@ -235,12 +239,18 @@ export function ContributionForm({ objectId, objects, fromObject }: { objectId: 
                 </div>
               ) : field.type === 'textarea' ? (
                 <label key={field.name}><span className="field-name">{field.label}{field.required && <b aria-hidden="true"> *</b>}</span>
-                  <textarea rows={4} placeholder={field.placeholder} value={values[kind]?.[field.name] ?? ''} onChange={(event) => setValue(kind, field.name, event.target.value)} />
+                  <LimitedTextarea
+                    rows={4} placeholder={field.placeholder} max={field.max}
+                    value={values[kind]?.[field.name] ?? ''} onValueChange={(value) => setValue(kind, field.name, value)}
+                  />
                   {field.help && <small className="field-help">{field.help}</small>}
                 </label>
               ) : (
                 <label key={field.name}><span className="field-name">{field.label}{field.required && <b aria-hidden="true"> *</b>}</span>
-                  <input placeholder={field.placeholder} value={values[kind]?.[field.name] ?? ''} onChange={(event) => setValue(kind, field.name, event.target.value)} />
+                  <LimitedInput
+                    placeholder={field.placeholder} max={field.max}
+                    value={values[kind]?.[field.name] ?? ''} onValueChange={(value) => setValue(kind, field.name, value)}
+                  />
                   {field.help && <small className="field-help">{field.help}</small>}
                 </label>
               ))}
@@ -260,7 +270,7 @@ export function ContributionForm({ objectId, objects, fromObject }: { objectId: 
                 </label>
               ))}
             </fieldset>
-            <label>What would you like to happen?<input value={requestedOutcome} onChange={(event) => setRequestedOutcome(event.target.value)} /></label>
+            <label>What would you like to happen?<LimitedInput value={requestedOutcome} max={MAX_TEXT.requestedOutcome} onValueChange={setRequestedOutcome} /></label>
           </>
         )}
 

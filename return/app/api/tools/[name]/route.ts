@@ -269,7 +269,17 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
       return invalid('body', 'The request body is not valid JSON.', 'Send the arguments as a JSON object, or {} for a call that takes none.');
     }
   }
-  const objectId = typeof args.object_id === 'string' ? args.object_id : '';
+  /**
+   * Every argument this route reads goes through `takeText`, ids included (V7-7).
+   *
+   * The stored fields were converted last round and the lookup keys were not, which is
+   * how `request_clarification` kept writing a question of any length: it was read with
+   * a bare type check like an id, and it is not an id — a contributor reads it back.
+   * `grep "typeof args\."` returning nothing is the invariant that keeps this closed.
+   */
+  const objectId$ = takeText(args.object_id, 'object_id', { max: MAX_TEXT.id, label: 'An object id' });
+  if (refused(objectId$)) return objectId$.refusal;
+  const objectId = objectId$;
 
   switch (name) {
     /* ------------- Community: discovery ------------- */
@@ -366,7 +376,7 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
       if (refused(requestedOutcome)) return requestedOutcome.refusal;
       const evidenceRefs = takeStringList(args.evidence_refs, 'evidence_refs', { max: MAX_EVIDENCE_IDS, label: 'evidence_refs' });
       if (refused(evidenceRefs)) return evidenceRefs.refusal;
-      const title = givenTitle || claim.slice(0, 80);
+      const title = givenTitle || (claim.length > 80 ? `${claim.slice(0, 79)}…` : claim);
       if (!title) return invalid(name === 'submit_evidence' ? 'title' : 'claim', 'A contribution needs a short title or claim.', 'Describe the material in one line.');
 
       // MCP-E1 — an unrecognised consent level used to be stored verbatim and then read
@@ -395,7 +405,9 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
     }
 
     case 'check_submission': {
-      const id = typeof args.submission_id === 'string' ? args.submission_id : '';
+      const id$ = takeText(args.submission_id, 'submission_id', { max: MAX_TEXT.id, label: 'A contribution id' });
+      if (refused(id$)) return id$.refusal;
+      const id = id$;
       const row = id ? await getSubmission(museumId, id) : null;
       if (!row) return invalid('submission_id', 'No contribution with that id exists in this workspace.', 'Use the id returned by submit_evidence.');
       // FR2-K1 — the latest question verbatim, not a sentence saying one exists. Only the
@@ -412,7 +424,7 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
             ? 'A curator asked a follow-up question about this contribution.'
             : 'Source and consent review is next. The public record has not changed.',
         ...(latest ? {
-          curator_question: latest.question.slice(0, 400),
+          curator_question: latest.question,
           questions_asked: asked.length,
           next: 'Answer by submitting the missing detail as a new contribution to the same object.',
         } : {}),
@@ -426,7 +438,9 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
     }
 
     case 'list_objects': {
-      const status = typeof args.status === 'string' ? args.status.toLowerCase() : '';
+      const status$ = takeText(args.status, 'status', { max: MAX_TEXT.term, label: 'A record status' });
+      if (refused(status$)) return status$.refusal;
+      const status = status$.toLowerCase();
       const collection = await listObjects(museumId, 'agent');
       const objects = collection.filter((item) => !status || item.status.toLowerCase().includes(status));
       const perObject = await Promise.all(objects.map((item) => listSubmissions(museumId, { objectId: item.id })));
@@ -440,9 +454,11 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
     }
 
     case 'list_submissions': {
+      const listStatus = takeText(args.status, 'status', { max: MAX_TEXT.term, label: 'A contribution status' });
+      if (refused(listStatus)) return listStatus.refusal;
       const rows = await listSubmissions(museumId, {
-        status: typeof args.status === 'string' ? args.status : undefined,
-        objectId: typeof args.object_id === 'string' ? args.object_id : undefined,
+        status: listStatus || undefined,
+        objectId: objectId || undefined,
       });
       // A triage list has to stay readable as a workspace fills up. Bodies are
       // excerpted here and read in full through get_review_case, which is the
@@ -504,8 +520,9 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
           untrusted_content: true,
         });
       }
-      const caseId = typeof args.case_id === 'string' ? args.case_id
-        : requestedEvidenceIds.length ? requestedEvidenceIds[0] : '';
+      const caseId$ = takeText(args.case_id, 'case_id', { max: MAX_TEXT.id, label: 'A case id' });
+      if (refused(caseId$)) return caseId$.refusal;
+      const caseId = caseId$ || (requestedEvidenceIds.length ? requestedEvidenceIds[0] : '');
       const row = caseId ? await getSubmission(museumId, caseId) : null;
       if (!row) return invalid(name === 'get_review_case' ? 'case_id' : 'evidence_ids', 'No review case with that id exists in this workspace.', 'Call list_submissions to list open cases.');
       const [record, evidence] = await Promise.all([
@@ -558,8 +575,12 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
 
     /* ------------- Curator: consequential ------------- */
     case 'request_clarification': {
-      const id = typeof args.submission_id === 'string' ? args.submission_id : '';
-      const question = typeof args.question === 'string' ? args.question.trim() : '';
+      const askId = takeText(args.submission_id, 'submission_id', { max: MAX_TEXT.id, label: 'A contribution id' });
+      if (refused(askId)) return askId.refusal;
+      const id = askId;
+      const question$ = takeText(args.question, 'question', { max: MAX_TEXT.question, label: 'A clarification' });
+      if (refused(question$)) return question$.refusal;
+      const question = question$;
       if (!question) return invalid('question', 'A clarification needs a question.', 'Ask about date, place, source, or consent scope.');
       // The same ceiling as the console route, for the same reason (OB-1).
       if (question.length > MAX_TEXT.question) {
@@ -596,13 +617,12 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
     case 'propose_label_update': {
       const record = await objectRecord(museumId, objectId, 'agent');
       if (!record) return invalid(...NO_OBJECT);
-      const draft = typeof args.draft === 'string' ? args.draft.trim() : '';
-      if (!draft) return invalid('draft', 'A proposal needs the label text it would publish.', 'Call draft_label first, then propose the text it returns.');
       // The ceiling WEBMCP_TOOLS §3.8 already declared. An approval snapshot is immutable
       // and hashed, so an unbounded draft is stored and re-read forever (OB-1).
-      if (draft.length > MAX_TEXT.draft) {
-        return invalid('draft', `A label is at most ${MAX_TEXT.draft} characters, and this draft is ${draft.length}.`, 'Shorten the label, or propose the change in more than one revision.');
-      }
+      const draft$ = takeText(args.draft, 'draft', { max: MAX_TEXT.draft, label: 'A label' });
+      if (refused(draft$)) return draft$.refusal;
+      const draft = draft$;
+      if (!draft) return invalid('draft', 'A proposal needs the label text it would publish.', 'Call draft_label first, then propose the text it returns.');
       const justification = takeText(args.justification, 'justification', { max: MAX_TEXT.justification, label: 'The justification' });
       if (refused(justification)) return justification.refusal;
 
@@ -691,7 +711,9 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
 
     /* ------------- Curator: governance ------------- */
     case 'check_approval': {
-      const id = typeof args.approval_id === 'string' ? args.approval_id : '';
+      const approvalId$ = takeText(args.approval_id, 'approval_id', { max: MAX_TEXT.id, label: 'An approval id' });
+      if (refused(approvalId$)) return approvalId$.refusal;
+      const id = approvalId$;
       const row = id ? await getApproval(museumId, id) : null;
       if (!row) return invalid('approval_id', 'No approval with that id exists in this workspace.', 'Call list_pending_approvals to list open requests.');
       return Response.json({
@@ -733,7 +755,9 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
     }
 
     case 'get_asset_detail': {
-      const assetId = typeof args.asset_id === 'string' ? args.asset_id : '';
+      const assetId$ = takeText(args.asset_id, 'asset_id', { max: MAX_TEXT.id, label: 'An asset id' });
+      if (refused(assetId$)) return assetId$.refusal;
+      const assetId = assetId$;
       const row = assetId ? await getAsset(museumId, assetId) : null;
       const access = row ? assetAccess(assetRefOf(row), { role, museumId }) : 'absent';
       // A missing row and an `absent` verdict answer identically, so a sealed asset
@@ -750,7 +774,9 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
     }
 
     case 'attach_assets': {
-      const submissionId = typeof args.submission_id === 'string' ? args.submission_id : '';
+      const submissionId$ = takeText(args.submission_id, 'submission_id', { max: MAX_TEXT.id, label: 'A contribution id' });
+      if (refused(submissionId$)) return submissionId$.refusal;
+      const submissionId = submissionId$;
       const submission = submissionId ? await getSubmission(museumId, submissionId) : null;
       if (!submission) return invalid('submission_id', 'No contribution with that id exists in this workspace.', 'Submit the contribution first, then attach files to it.');
       const ids = Array.isArray(args.asset_ids) ? args.asset_ids.filter((value) => typeof value === 'string').map(String) : [];

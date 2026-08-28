@@ -3,7 +3,7 @@ import { ensureDatabase } from '@/db/setup';
 import { CONTRIBUTION_KINDS, describeKinds, fieldsFor, missingFields, type ContributionKind, type KindDetail } from '@/lib/community/contribution';
 import { MAX_ASSETS_PER_CONTRIBUTION } from '@/lib/assets/access';
 import { CONSENT_LEVELS, MAX_TEXT, isConsent, type Consent } from '@/lib/domain/types';
-import { guarded, readJsonBody, refused, takeStringList, takeText } from '@/lib/http/input';
+import { guarded, readJsonBody, refused, takeStringList, takeText, type Refusal } from '@/lib/http/input';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
 import { findObject } from '@/lib/records';
 import { sessionFromRequest } from '@/lib/session';
@@ -26,21 +26,31 @@ type Body = Record<string, unknown>;
  *
  * Everything read here is checked before it is used, because `kinds` and `details` are
  * whatever the caller sent — a number has no `.includes`, and a string has no `.find`.
+ *
+ * Each answer is checked against the ceiling its own question declares, not against the
+ * four thousand characters of a prose body (V7-4). A date field used to accept a
+ * four-thousand-character answer and store the first four thousand of whatever arrived,
+ * cut mid-word, while the response said `applied`. The form renders `maxLength` from the
+ * same declaration, so a contributor cannot type past what this will accept.
  */
-function readDetails(kinds: string[], rawDetails: unknown): KindDetail[] {
+function readDetails(kinds: string[], rawDetails: unknown): KindDetail[] | Refusal {
   const entries = Array.isArray(rawDetails) ? rawDetails : [];
   const chosen = CONTRIBUTION_KINDS.filter((kind) => kinds.includes(kind));
-  return chosen.map((kind) => {
+  const details: KindDetail[] = [];
+  for (const kind of chosen) {
     const match = entries.find((entry) => !!entry && typeof entry === 'object' && (entry as { kind?: unknown }).kind === kind);
     const rawValues = (match as { values?: unknown } | undefined)?.values;
     const supplied = (rawValues && typeof rawValues === 'object' && !Array.isArray(rawValues) ? rawValues : {}) as Record<string, unknown>;
     const values: Record<string, string> = {};
     for (const field of fieldsFor(kind)) {
-      const value = supplied[field.name];
-      if (typeof value === 'string' && value.trim()) values[field.name] = value.trim().slice(0, MAX_TEXT.body);
+      if (field.type === 'files') continue;
+      const value = takeText(supplied[field.name], `details.${kind}.${field.name}`, { max: field.max, label: `${kind}: ${field.label}` });
+      if (refused(value)) return value;
+      if (value) values[field.name] = value;
     }
-    return { kind, values };
-  });
+    details.push({ kind, values });
+  }
+  return details;
 }
 
 /**
@@ -84,7 +94,9 @@ export const POST = guarded(async (request: Request) => {
   const kinds$ = takeStringList(body.kinds, 'kinds', { max: CONTRIBUTION_KINDS.length, label: 'The kinds of material' });
   if (refused(kinds$)) return kinds$.refusal;
 
-  const details = readDetails(kinds$, body.details);
+  const details$ = readDetails(kinds$, body.details);
+  if (refused(details$)) return details$.refusal;
+  const details = details$;
   if (details.length === 0) {
     return Response.json({ outcome: 'invalid', field: 'kinds', reason: 'Choose at least one kind of material.', recovery: 'Select what you are sharing.' }, { status: 400 });
   }
@@ -104,10 +116,17 @@ export const POST = guarded(async (request: Request) => {
   const assetIds = assetIds$;
   // Alt text is per file and describes an image for someone who cannot see it. Only
   // strings are kept, so a malformed map cannot reach the update that writes them.
-  const rawAlts = body.assetAlts && typeof body.assetAlts === 'object' && !Array.isArray(body.assetAlts) ? body.assetAlts as Record<string, unknown> : {};
+  // A map that is not a map is refused rather than read as an empty one, so alternative
+  // text sent in the wrong shape does not vanish while the contribution reports `applied`.
+  if (body.assetAlts !== undefined && (!body.assetAlts || typeof body.assetAlts !== 'object' || Array.isArray(body.assetAlts))) {
+    return Response.json({ outcome: 'invalid', field: 'assetAlts', reason: 'The alternative text must be an object keyed by file id.', recovery: 'Send { "AST-…": "what the image shows" }.' }, { status: 400 });
+  }
+  const rawAlts = (body.assetAlts ?? {}) as Record<string, unknown>;
   const assetAlts: Record<string, string> = {};
   for (const [assetId, text] of Object.entries(rawAlts)) {
-    if (typeof text === 'string' && text.trim()) assetAlts[assetId] = text.trim().slice(0, MAX_TEXT.altText);
+    const alt = takeText(text, 'assetAlts', { max: MAX_TEXT.altText, label: 'Alternative text' });
+    if (refused(alt)) return alt.refusal;
+    if (alt) assetAlts[assetId] = alt;
   }
   const kinds = details.map((detail) => detail.kind) as ContributionKind[];
 

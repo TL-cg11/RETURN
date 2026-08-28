@@ -63,6 +63,10 @@ export const MAX_TEXT = {
   period: 60,
   material: 200,
   origin: 200,
+  /** A classifying word or short phrase: a document kind, a language, a relationship. */
+  term: 80,
+  /** A caption written for one file. */
+  caption: 300,
   /** A curator's question, matching what `check_submission` reads back. */
   question: MAX_CLARIFICATION_CHARS,
   /** A published label. */
@@ -75,6 +79,8 @@ export const MAX_TEXT = {
   editReason: 500,
   /** Alternative text describing one image. */
   altText: 300,
+  /** The name of an uploaded file, as its own filesystem wrote it. */
+  fileName: 120,
 } as const;
 
 /**

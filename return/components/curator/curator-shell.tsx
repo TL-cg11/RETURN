@@ -7,6 +7,8 @@ import { registerWebMcpTools } from '@/lib/webmcp/register';
 import { useLiveRecord } from '@/lib/live/use-live-record';
 import { communityTools, curatorTools } from '@/lib/webmcp/tools';
 import { diffLabelText } from '@/lib/label-diff';
+import { MAX_TEXT } from '@/lib/domain/types';
+import { LimitedTextarea } from '@/components/shared/limited-field';
 
 export type PendingApproval = {
   id: string; objectId: string; objectTitle: string; currentLabel: string;
@@ -349,7 +351,10 @@ export function CuratorShell({
                     </article>
                   </div>
                   <label className="approval-editor-label" htmlFor="approval-draft">Curator edit</label>
-                  <textarea id="approval-draft" rows={6} value={draft} onChange={(event) => setDraft(event.target.value)} />
+                  {/* A curator editing here publishes straight to the public record, and
+                      this box had no ceiling at all: six thousand characters past the one
+                      `propose_label_update` enforces went out as a public label (V7-1). */}
+                  <LimitedTextarea id="approval-draft" rows={6} value={draft} max={MAX_TEXT.draft} onValueChange={setDraft} />
                   {draft !== approval.snapshot && <p className="restriction-note">Edited. This will be recorded as approve-with-edit.</p>}
                 </section>
                 {error && <p className="clarify-result" role="alert">{error}</p>}

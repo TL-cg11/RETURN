@@ -2,7 +2,7 @@ import { getAsset, recordActivity, setAssetVisibility } from '@/db/queries';
 import type { Consent } from '@/lib/domain/types';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
 import { sessionFromRequest } from '@/lib/session';
-import { guarded } from '@/lib/http/input';
+import { guarded, readJsonBody, refused } from '@/lib/http/input';
 
 /**
  * Opens one asset to public display, or withdraws it again.
@@ -20,8 +20,12 @@ export const POST = guarded(async (request: Request, { params }: { params: Promi
   if (role !== 'curator') return Response.json({ outcome: 'denied', risk: 'LOW', reason: 'Curator role required.', recovery: 'Switch to the curator workspace.' }, { status: 403 });
 
   const { id } = await params;
-  const body = await request.json().catch(() => ({})) as { publish?: boolean };
-  const publish = body.publish !== false;
+  const parsed = await readJsonBody(request);
+  if (refused(parsed)) return parsed.refusal;
+  if (parsed.publish !== undefined && typeof parsed.publish !== 'boolean') {
+    return Response.json({ outcome: 'invalid', field: 'publish', reason: 'Publish must be true or false.', recovery: 'Send { "publish": false } to withdraw, or no body to publish.' }, { status: 400 });
+  }
+  const publish = parsed.publish !== false;
 
   const asset = await getAsset(museumId, id);
   // A sealed asset answers as absent here too, so this route cannot be used to

@@ -504,10 +504,14 @@ export async function attachAssetsToSubmission(museumId: string, submissionId: s
     .bind(submissionId, consent, objectId ?? null, now, museumId, ...assetIds).run();
   // Alt text is per asset, so it cannot ride the single UPDATE above. Only assets this
   // call just claimed are touched, so a stray id cannot relabel someone else's file.
+  //
+  // The text is stored as the caller sent it. It used to be cut at three hundred here as
+  // well, so a value the route had accepted was written shorter than the answer the route
+  // had given — two ceilings for one field, and only one of them visible (V7-4).
   const described = Object.entries(altText ?? {}).filter(([id, text]) => assetIds.includes(id) && text.trim());
   if (described.length > 0) {
     await db.batch(described.map(([id, text]) => db.prepare('UPDATE assets SET alt_text=?, updated_at=? WHERE museum_id=? AND id=? AND submission_id=?')
-      .bind(text.trim().slice(0, 300), now, museumId, id, submissionId)));
+      .bind(text.trim(), now, museumId, id, submissionId)));
   }
   return result.meta?.changes ?? 0;
 }
@@ -598,7 +602,9 @@ export async function appendClarification(museumId: string, submissionId: string
   const db = await ensureDatabase(museumId);
   const row = await getSubmission(museumId, submissionId);
   if (!row) return [];
-  const history = [...parseClarifications(row.clarifications), { question: question.trim().slice(0, 1000), askedAt: Date.now(), askedBy }];
+  // Stored whole. Both callers check the question against MAX_TEXT.question first, and a
+  // second, larger, invisible ceiling here could only ever disagree with them (V7-4).
+  const history = [...parseClarifications(row.clarifications), { question: question.trim(), askedAt: Date.now(), askedBy }];
   await db.prepare('UPDATE submissions SET clarifications=?, updated_at=? WHERE museum_id=? AND id=?')
     .bind(JSON.stringify(history), Date.now(), museumId, submissionId).run();
   return history;
