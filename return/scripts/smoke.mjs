@@ -509,7 +509,11 @@ async function main() {
   const attachUnknown = await tool('attach_assets', { submission_id: 'SUB-NOT-REAL', asset_ids: [toolUpload.json?.id] });
   check('attach_assets refuses an unknown contribution', attachUnknown.status === 400, `status ${attachUnknown.status}`);
   const reattach = await tool('attach_assets', { submission_id: toolSubmission.json?.submission_id, asset_ids: [toolUpload.json?.id] });
-  check('an already-attached file is not moved a second time', reattach.json?.attached === 0, `attached ${reattach.json?.attached}`);
+  // This used to read `attached === 0`, which pinned the old meaning of that number: rows
+  // the UPDATE happened to change. F4-3 made both counts answer "is it on the contribution",
+  // so a file already there reads as attached. What the check is actually for — the file is
+  // not duplicated and nothing else moves — is asserted directly.
+  check('an already-attached file is counted, not duplicated', reattach.json?.attached === 1 && reattach.json?.total_on_contribution === attach.json?.total_on_contribution, JSON.stringify(reattach.json).slice(0, 120));
 
   // Tools never carry file contents, only ids and metadata (RETURN_PLAN 15.1).
   const listed = await tool('list_object_assets', { object_id: 'moonbird-mask' });
@@ -875,6 +879,57 @@ async function main() {
   const noAsset = await req('/api/curator/assets/AST-NOT-REAL/publish', { method: 'POST' });
   check('an unknown asset answers in the tool contract', noAsset.status === 404 && fourFields(noAsset.json), JSON.stringify(noAsset.json).slice(0, 110));
   await setRole('community');
+  /* ---------- 14. the second browser sweep (FIX_REQUEST_4.md) ---------- */
+  section('second sweep');
+  await post('/api/reset');
+  await setRole('curator');
+
+  /* F4-1 — a stewardship review states why it is being asked for. */
+  const reviewNoBasis = await tool('open_return_review', { object_id: 'moonbird-mask', evidence_ids: ['EV-068'] });
+  check('a review with no basis is refused', reviewNoBasis.json?.outcome === 'invalid' && reviewNoBasis.json?.field === 'basis', JSON.stringify(reviewNoBasis.json).slice(0, 120));
+  const reviewBlankBasis = await tool('open_return_review', { object_id: 'moonbird-mask', basis: '   ', evidence_ids: ['EV-068'] });
+  check('a review with a blank basis is refused', reviewBlankBasis.json?.field === 'basis');
+  const reviewWithBasis = await tool('open_return_review', { object_id: 'moonbird-mask', basis: 'A community request names this object.', evidence_ids: ['EV-068'] });
+  check('a review with a basis reaches human review', reviewWithBasis.json?.outcome === 'pending_approval', JSON.stringify(reviewWithBasis.json).slice(0, 120));
+  const auditTrail = await get('/curator/activity');
+  check('no stewardship review is logged with an invented reason', !auditTrail.text.includes('no basis given'), 'the placeholder reached the audit trail');
+
+  /* F4-4 — the last answer that was not in the four-field contract. */
+  const noSuchTool = await tool('not_a_real_tool', {});
+  check('an unknown tool answers in the tool contract', noSuchTool.status === 404 && noSuchTool.json?.outcome === 'invalid' && noSuchTool.json?.field === 'name', JSON.stringify(noSuchTool.json).slice(0, 120));
+  check('the unknown-tool refusal names the tool asked for', /not_a_real_tool/.test(noSuchTool.json?.reason ?? ''), noSuchTool.json?.reason);
+
+  /* F4-5 — a page size this system cannot honour is refused, not bent. */
+  for (const bad of [-5, 0, 2.7, 101]) {
+    const f4Refused = await tool('list_submissions', { limit: bad });
+    check(`a limit of ${bad} is refused`, f4Refused.json?.outcome === 'invalid' && f4Refused.json?.field === 'limit', JSON.stringify(f4Refused.json).slice(0, 90));
+  }
+  const twoRows = await tool('list_submissions', { limit: 2 });
+  check('a limit inside the range is honoured exactly', twoRows.json?.returned === 2, `${twoRows.json?.returned}`);
+  const defaultRows = await tool('list_submissions', {});
+  check('an absent limit still uses the default', defaultRows.json?.returned === defaultRows.json?.count, `${defaultRows.json?.returned} of ${defaultRows.json?.count}`);
+
+  /* F4-3 — the two counts answer the same question. */
+  await setRole('community');
+  const countCase = await tool('submit_evidence', { object_id: 'moonbird-mask', title: 'Attachment count probe', consent: 'public_attributed' });
+  const countSub = countCase.json?.submission_id;
+  const fileA = (await upload('image/png', 'count-a.png')).json?.id;
+  const fileB = (await upload('image/png', 'count-b.png')).json?.id;
+  const reconciles = (body) => (body?.attached ?? -1) + ((body?.omitted_asset_ids ?? []).length) === body?.requested;
+  const firstAttach = await tool('attach_assets', { submission_id: countSub, asset_ids: [fileA] });
+  check('attaching a new file counts it', firstAttach.json?.attached === 1 && reconciles(firstAttach.json), JSON.stringify(firstAttach.json).slice(0, 110));
+  const repeatAttach = await tool('attach_assets', { submission_id: countSub, asset_ids: [fileA] });
+  check('a file already on the contribution still counts as attached', repeatAttach.json?.attached === 1 && reconciles(repeatAttach.json), JSON.stringify(repeatAttach.json).slice(0, 110));
+  const mixedAttach = await tool('attach_assets', { submission_id: countSub, asset_ids: [fileB, fileA, 'AST-NOT-REAL'] });
+  check('a mixed attach reconciles attached, omitted and requested', mixedAttach.json?.attached === 2 && reconciles(mixedAttach.json), JSON.stringify(mixedAttach.json).slice(0, 130));
+  check('the mixed attach names only the id that did not resolve', (mixedAttach.json?.omitted_asset_ids ?? []).join() === 'AST-NOT-REAL');
+  const failedAttach = await tool('attach_assets', { submission_id: countSub, asset_ids: ['AST-NOT-REAL'] });
+  check('an attach that lands nothing is still refused', failedAttach.json?.outcome === 'invalid' && reconciles(failedAttach.json), JSON.stringify(failedAttach.json).slice(0, 110));
+
+  /* F4-2 — the contribution form does not promise a draft it never keeps. */
+  const contributePage = await get('/contribute');
+  check('the form makes no claim about keeping a draft', !/draft stays in this browser/i.test(contributePage.text), 'the promise is still on the page');
+  check('the form still says who controls the contribution', contributePage.text.includes('You control how the museum may use your contribution'));
   /* ---------- report ---------- */
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${'-'.repeat(60)}`);

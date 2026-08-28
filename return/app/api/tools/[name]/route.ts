@@ -228,7 +228,14 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
   const { name } = await params;
   const { role, museumId } = await sessionFromRequest(request);
 
-  if (!KNOWN.has(name)) return Response.json({ error: 'Unknown tool' }, { status: 404 });
+  // The last answer on this surface that was not in the four-field contract (F4-4).
+  if (!KNOWN.has(name)) {
+    return Response.json({
+      outcome: 'invalid', field: 'name',
+      reason: `There is no tool called ${name} on this surface.`,
+      recovery: 'Read the registered tool list from document.modelContext.getTools(), or call a tool this role can reach.',
+    }, { status: 404 });
+  }
   if (CURATOR_ONLY.has(name) && role !== 'curator') {
     return Response.json({ outcome: 'denied', risk: 'LOW', reason: 'Curator role required.', recovery: 'Switch to the curator workspace.' }, { status: 403 });
   }
@@ -413,7 +420,16 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
       // A triage list has to stay readable as a workspace fills up. Bodies are
       // excerpted here and read in full through get_review_case, which is the
       // output budget the tool catalogue asks for.
-      const limit = Math.min(Math.max(Number(args.limit) || 20, 1), 100);
+      // A limit this system cannot honour is refused rather than bent into one it can
+      // (F4-5). Clamping turned -5 into 1 and 0 into 20, so a caller counting on its own
+      // number read a page size it never asked for. An absent limit still means 20.
+      if (args.limit !== undefined) {
+        const asked = Number(args.limit);
+        if (!Number.isInteger(asked) || asked < 1 || asked > 100) {
+          return invalid('limit', 'A limit must be a whole number between 1 and 100.', 'Ask for a page size in that range, or omit limit for the default of 20.');
+        }
+      }
+      const limit = args.limit === undefined ? 20 : Number(args.limit);
       const page = rows.slice(0, limit);
       return Response.json({
         count: rows.length,
@@ -599,8 +615,14 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
       const resolvedRefs = await refsFrom(museumId, args, record.id);
       const citation = citationProblem(resolvedRefs, record.id);
       if (citation) return citation;
+      // The catalogue declares `basis` required and the handler used to substitute
+      // "no basis given" for a missing one and keep whitespace for a blank one, then queue
+      // the review anyway (F4-1). A stewardship review is a HIGH action that asks a human
+      // to weigh a claim; arriving with the reason invented by the server is not a claim.
+      // `register_object` has always refused the same field, and this now matches it.
+      const basis = typeof args.basis === 'string' ? args.basis.trim() : '';
+      if (!basis) return invalid('basis', 'A stewardship review needs the reason it is being asked for.', 'Say what makes this object a candidate for review, and cite the evidence for it.');
       const policy = evaluatePolicy({ actor: role, action: 'open_return_review', museumMatch: true, refs: resolvedRefs.refs });
-      const basis = String(args.basis ?? 'no basis given');
       if (policy.outcome === 'pending_approval') {
         await recordActivity(museumId, 'Curator Agent', 'requested a stewardship review', `${record.title} · ${basis}`, {
           tool: 'open_return_review', target: record.id, risk: 'HIGH', policyDecision: 'pending_approval', result: 'queued',
@@ -691,13 +713,16 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
       // Only unattached assets in this workspace move, and they inherit the
       // contribution's consent. An id belonging to another contribution simply does
       // not match, so the returned count comes back lower than the ids supplied.
-      const attached = await attachAssetsToSubmission(museumId, submission.id, ids, submission.consent, submission.object_id);
+      await attachAssetsToSubmission(museumId, submission.id, ids, submission.consent, submission.object_id);
       const held = await listSubmissionAssets(museumId, submission.id);
-      // Which of the supplied ids are actually on the contribution now. Read back from
-      // the contribution rather than trusted from the update count, so an id that was
-      // already attached here reads as attached and an id that never resolved reads as
-      // omitted (MCP-E3).
+      // Both numbers are read back from the contribution, so they answer the same question:
+      // which of the ids you named are on it now. MCP-E3 moved `omitted` to this reading and
+      // left `attached` as the row count the UPDATE happened to change, so the two disagreed
+      // whenever a file was already attached — `attached: 0` with nothing omitted, or
+      // `requested - omitted` coming out one higher than `attached` (F4-3). A file that is
+      // on the contribution is attached, whether this call is what put it there or not.
       const omitted = ids.filter((id) => !held.some((asset) => asset.id === id));
+      const attached = ids.length - omitted.length;
 
       // Nothing moved. `applied` here told an agent its files were on the contribution
       // when no file was: the ids were unknown, already spoken for, or in another

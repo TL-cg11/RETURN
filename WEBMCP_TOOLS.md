@@ -73,6 +73,17 @@
 에이전트가 읽을 것도 시도할 것도 없었다. `error` 응답은 `reason` 과 `recovery` 를 함께 싣고,
 원래 예외는 서버 로그에 남는다.
 
+**선언한 `required` 는 강제한다 (F4-1).** 카탈로그가 required 로 적은 파라미터는 서버가 실제로
+요구한다. `open_return_review` 만 `basis` 가 없을 때 서버가 문구를 지어내고 통과시키고 있었다.
+17개 required 파라미터를 하나씩 빼며 확인했고, 지금은 전부 강제된다.
+
+**모르는 툴 이름도 계약 안에서 답한다 (F4-4).** `{"error":"Unknown tool"}` 이 아니라
+`invalid` + `field:"name"` 이다. 이 표면의 모든 응답이 `outcome` 을 싣는다.
+
+**범위 밖 인자는 구부리지 않는다 (F4-5).** `list_submissions.limit` 은 1–100 의 정수여야 하고,
+벗어나면 `invalid` 다. 종전에는 -5 를 1 로, 0 을 20 으로 조용히 바꿨다. 생략은 기본값 20 이며,
+이는 보정이 아니다.
+
 **인자 본문.** 파싱되지 않는 본문은 `invalid` + `field:"body"` 로 거부한다(OB-3). 종전에는
 `{}` 로 읽어서, 질의 없는 검색처럼 그럴듯한 성공으로 보였다. 본문이 아예 없으면 인자 없는
 호출로 그대로 처리한다.
@@ -360,6 +371,10 @@
   `applied` 로 답해서, 에이전트가 실패를 성공으로 읽었다 (MCP-E3).
 - 일부만 붙으면 `applied` 이되 **`omitted_asset_ids`** 로 실패한 id 를 이름으로 돌려준다.
   `compare_evidence` 의 `omitted_evidence_ids` 와 같은 규약이다.
+- **`attached` 와 `omitted_asset_ids` 는 같은 질문에 답한다 (F4-3)** — 지금 이 기여에 올라와
+  있는가. 따라서 항상 `attached + omitted_asset_ids.length === requested` 다. 이미 붙어 있던
+  파일도 `attached` 에 든다. 종전에는 `attached` 가 UPDATE 가 바꾼 행 수여서, 재첨부가
+  `attached:0` 에 누락도 없는 상태로 돌아왔다.
 - 응답: `attached` · `requested` · `total_on_contribution` · `visibility:"restricted"` · (해당 시) `omitted_asset_ids`.
 
 ### 3B.2 `list_object_assets` — LOW · read · Shared
@@ -401,6 +416,7 @@
 표면 양쪽에서 가능하되, **도구는 제안만 하고 기록을 만들지 않는다.**
 
 - 위험 등급 **HIGH**. 새 유물은 공식 기록을 만드는 행위이므로 `publish_label` 과 같은 칸에 선다
+- `open_return_review` 도 같은 등급이며, `basis` 없이는 진행하지 않는다 (F4-1)
 - **accession 중복은 제안 단계에서 거부한다 (EA-3).** `objects` 에 유니크 인덱스가 있고 등록
   라우트가 409 를 돌려주므로, 이미 쓰이는 번호를 담은 제안은 실패가 확정돼 있다. 종전에는 제목
   slug 만 검사해서 그 제안이 큐레이터 큐까지 갔고, 사람이 실행하려는 순간에야 막혔다

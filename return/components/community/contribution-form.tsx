@@ -135,7 +135,13 @@ export function ContributionForm({ objectId, objects, fromObject }: { objectId: 
             </li>
           ))}
         </ol>
-        <p className="privacy-note">Your draft stays in this browser until you submit it. You control how the museum may use your contribution.</p>
+        {/* This used to open with "Your draft stays in this browser until you submit it",
+            which was not true: nothing is written to storage, and a reload returns to step
+            one with every field empty (F4-2). The sentence was doing real work — it told a
+            contributor they could leave and come back — so a false version of it is worse
+            than none. What remains is the part that is true and is the point: the
+            contributor decides how the museum may use what they send. */}
+        <p className="privacy-note">You control how the museum may use your contribution.</p>
       </aside>
 
       <section className="form-stage">
