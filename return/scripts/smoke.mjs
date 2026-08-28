@@ -808,12 +808,16 @@ async function main() {
   section('browser sweep');
   await post('/api/reset');
 
-  /* EA-1 — a long query is a search, not a 500. */
+  /* EA-1 — a long query is a search, not a 500. F6-3 gave the field a ceiling, so a
+     phrase past it is refused in the contract; the point of this check is that neither
+     answer is an unhandled throw. */
   await setRole('community');
-  for (const length of [48, 49, 200, 2000]) {
+  for (const length of [48, 49, 200]) {
     const long = await tool('search_collection', { query: 'a'.repeat(length) });
-    check(`a ${length}-character query is answered, not thrown`, long.status === 200 && long.json?.count === 0, `status ${long.status}`);
+    check(`a ${length}-character query is searched, not thrown`, long.status === 200 && long.json?.count === 0, `status ${long.status}`);
   }
+  const pastTheCeiling = await tool('search_collection', { query: 'a'.repeat(2000) });
+  check('a query past the ceiling is refused in the contract, not thrown', pastTheCeiling.status === 400 && pastTheCeiling.json?.field === 'query', JSON.stringify(pastTheCeiling.json).slice(0, 110));
   const stillSearches = await tool('search_collection', { query: 'basalt' });
   check('search still matches on a field other than the title', stillSearches.json?.objects?.[0]?.id === 'tide-listening-stone', JSON.stringify(stillSearches.json?.objects));
   const emptySearch = await tool('search_collection', {});
@@ -972,6 +976,111 @@ async function main() {
   const closedTwice = await post(`/api/curator/escalations/${raceId}/resolve`, { action: 'reviewed' });
   check('closing it again is refused with words the console can show', closedTwice.status === 409 && f5FourFields(closedTwice.json), JSON.stringify(closedTwice.json).slice(0, 120));
   check('the race refusal names what already happened', /already reviewed/i.test(closedTwice.json?.reason ?? ''), closedTwice.json?.reason);
+  await setRole('community');
+  /* ---------- 16. the source audit (FIX_REQUEST_6.md) ---------- */
+  section('source audit');
+  await post('/api/reset');
+
+  /* F6-1 — no route answers a wrong type with an unhandled throw. */
+  await setRole('community');
+  const kindOne = ['Object information'];
+  const detailOne = [{ kind: 'Object information', values: { claim: 'A claim' } }];
+  const wrongTypes = [
+    ['title', 0], ['title', true], ['title', []], ['title', {}],
+    ['objectId', 0], ['objectId', true], ['objectId', []],
+    ['kinds', 5], ['kinds', {}], ['details', 7], ['details', true],
+    ['assetIds', 'not-a-list'], ['assetIds', 5], ['source', 5], ['requestedOutcome', {}],
+  ];
+  const threw = [];
+  for (const [field, value] of wrongTypes) {
+    const f6Response = await post('/api/community/evidence', { objectId: 'moonbird-mask', title: 'Type probe', kinds: kindOne, details: detailOne, [field]: value });
+    if (f6Response.status >= 500 || f6Response.json === null) threw.push(`${field}=${JSON.stringify(value)} → ${f6Response.status}`);
+  }
+  check('the contribution route answers every wrong type in the contract', threw.length === 0, threw.join(' | '));
+  await setRole('curator');
+  const settledProbe = (await tool('list_submissions', {})).json?.submissions?.[0]?.id;
+  const clarifyTypes = [];
+  for (const value of [0, true, [], {}]) {
+    const f6Response = await post(`/api/curator/submissions/${settledProbe}/clarify`, { question: value });
+    if (f6Response.status >= 500 || f6Response.json === null) clarifyTypes.push(`${JSON.stringify(value)} → ${f6Response.status}`);
+  }
+  check('the clarification route answers every wrong type in the contract', clarifyTypes.length === 0, clarifyTypes.join(' | '));
+
+  /* F6-2 — a citation list is bounded before it reaches the database. */
+  const manyIds = Array.from({ length: 200 }, (_, index) => `EV-BULK-${index}`);
+  const f6Citing = ['propose_label_update', 'compare_evidence', 'draft_label', 'build_provenance_timeline', 'open_return_review', 'register_object'];
+  const unbounded = [];
+  for (const name of f6Citing) {
+    const f6Response = await tool(name, { object_id: 'moonbird-mask', draft: 'd', basis: 'b', title: 'T', accession: 'RT.9.B', evidence_ids: manyIds });
+    if (f6Response.status >= 500 || f6Response.json?.field !== 'evidence_ids') unbounded.push(`${name} → ${f6Response.status} ${f6Response.json?.outcome ?? ''}`);
+  }
+  check('every citing tool refuses an over-long list at the door', unbounded.length === 0, unbounded.join(' | '));
+  const twelve = await tool('compare_evidence', { evidence_ids: Array.from({ length: 12 }, () => 'EV-068') });
+  check('a citation at the declared limit is accepted', twelve.status === 200, `status ${twelve.status}`);
+
+  /* F6-3 — every f6Stored field has a ceiling. */
+  await setRole('community');
+  const overLong = [
+    ['title', 141], ['description', 4001], ['source', 121], ['requested_outcome', 141],
+  ];
+  const uncapped = [];
+  for (const [field, length] of overLong) {
+    const f6Response = await tool('submit_evidence', { object_id: 'moonbird-mask', title: 'Cap probe', [field]: 'x'.repeat(length) });
+    if (f6Response.json?.outcome !== 'invalid' || f6Response.json?.field !== field) uncapped.push(`${field} at ${length} → ${f6Response.json?.outcome}`);
+  }
+  check('every stored contribution field has a ceiling', uncapped.length === 0, uncapped.join(' | '));
+  await setRole('curator');
+  const curatorCaps = [];
+  for (const [name, args, field] of [
+    ['register_object', { title: 'x'.repeat(141), accession: 'RT.9.C', basis: 'b' }, 'title'],
+    ['register_object', { title: 'Cap', accession: 'x'.repeat(61), basis: 'b' }, 'accession'],
+    ['open_return_review', { object_id: 'moonbird-mask', basis: 'x'.repeat(2001) }, 'basis'],
+    ['propose_label_update', { object_id: 'moonbird-mask', draft: 'x'.repeat(6001) }, 'draft'],
+  ]) {
+    const f6Response = await tool(name, args);
+    if (f6Response.json?.field !== field) curatorCaps.push(`${name}/${field} → ${f6Response.json?.outcome} ${f6Response.json?.field}`);
+  }
+  check('every stored curator field has a ceiling', curatorCaps.length === 0, curatorCaps.join(' | '));
+
+  /* F6-4 — a value that is not text is refused, never coerced. */
+  await setRole('community');
+  const coerced = await tool('submit_evidence', { object_id: 'moonbird-mask', title: 'Coercion probe', description: { a: 1 }, consent: 'public_attributed' });
+  check('a non-text field is refused rather than stringified', coerced.json?.outcome === 'invalid' && coerced.json?.field === 'description', JSON.stringify(coerced.json).slice(0, 110));
+  await setRole('curator');
+  const f6Stored = await tool('list_submissions', { limit: 100 });
+  const objectish = (f6Stored.json?.submissions ?? []).filter((row) => row.title.includes('[object'));
+  check('no record holds a stringified object', objectish.length === 0, `${objectish.length} rows`);
+
+  /* F6-5 — a settled contribution stays settled. */
+  const linkable = (await tool('list_submissions', {})).json?.submissions?.find((row) => row.id.startsWith('SUB-1042'))?.id;
+  const linkProposal = await tool('propose_label_update', { object_id: 'moonbird-mask', draft: 'Moonbird Mask. Settled probe.', evidence_ids: ['EV-068', 'EV-059'] });
+  await post(`/api/curator/approvals/${linkProposal.json?.approval_id}/resolve`, { action: 'approved', draft: 'Moonbird Mask. Settled probe.' });
+  const settledRow = (await tool('list_submissions', {})).json?.submissions?.find((row) => row.id === linkable);
+  check('an approved revision settles the contribution it rested on', settledRow?.status === 'reflected in label', settledRow?.status);
+  const lateTool = await tool('request_clarification', { submission_id: linkable, question: 'A late question?' });
+  check('the tool refuses a question on a settled contribution', lateTool.json?.policy === 'submission_settled', JSON.stringify(lateTool.json).slice(0, 110));
+  const lateRoute = await post(`/api/curator/submissions/${linkable}/clarify`, { question: 'A late question?' });
+  check('the console refuses it too', lateRoute.json?.policy === 'submission_settled', JSON.stringify(lateRoute.json).slice(0, 110));
+  const afterLate = (await tool('list_submissions', {})).json?.submissions?.find((row) => row.id === linkable);
+  check('the contribution did not move back into review', afterLate?.status === 'reflected in label', afterLate?.status);
+
+  /* F6-6 — the panel counts the surface rather than naming a number.
+     The panel is client-rendered, so the served HTML never carries this sentence and a
+     check against the page would pass whatever the number said. The shipped bundle is
+     what the browser reads, so that is what is read here. */
+  const consoleBundle = await get('/curator');
+  const bundleUrls = [...consoleBundle.text.matchAll(/src="([^"]+.js)"/g)].map((match) => match[1]);
+  let panelClaim = null;
+  for (const url of bundleUrls) {
+    const chunk = await get(url);
+    const found = chunk.text.match(/Community pages register a different set of[^"]{0,40}/);
+    if (found) { panelClaim = found[0]; break; }
+  }
+  check('the console does not hardcode the community surface size', panelClaim === null || !/set of six/i.test(panelClaim), panelClaim ?? '(sentence not found in any chunk)');
+
+  /* F6-7 — counting does not read every row. */
+  const f6Summary = await tool('get_collection_summary', {});
+  check('the summary still counts contributions', typeof f6Summary.json?.total_submissions === 'number', JSON.stringify(f6Summary.json).slice(0, 90));
   await setRole('community');
   /* ---------- report ---------- */
   const failed = results.filter((r) => !r.ok);

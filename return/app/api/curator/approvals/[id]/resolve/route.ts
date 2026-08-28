@@ -7,6 +7,7 @@ import {
 import type { Authority, Consent, Visibility } from '@/lib/domain/types';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
 import { sessionFromRequest } from '@/lib/session';
+import { guarded } from '@/lib/http/input';
 
 type PublicationTarget = {
   id: string;
@@ -69,7 +70,7 @@ function linkedSubmissionUpdate(
     .bind(status, now, museumId, objectId, museumId, approvalId, approvalStatus, now, ...evidenceIds, ...evidenceIds);
 }
 
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+export const POST = guarded(async (request: Request, { params }: { params: Promise<{ id: string }> }) => {
   const { role, museumId } = await sessionFromRequest(request);
   if (role !== 'curator') return Response.json({ outcome: 'denied', risk: 'LOW', reason: 'Curator role required.', recovery: 'Switch to the curator workspace.' }, { status: 403 });
 
@@ -258,4 +259,4 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     outcome: 'applied', risk: policy.risk, id, status: resolution, resolution, edited, persisted: true, published: true,
     object_id: approval.object_id, revision, publication_id: publicationId, previous_label_id: previousLabelId,
   });
-}
+});

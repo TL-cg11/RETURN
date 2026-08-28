@@ -29,6 +29,76 @@ export const isQuotable = (value: unknown): boolean => value === 'public_anonymo
  */
 export const MAX_CLARIFICATION_CHARS = 400;
 export const MAX_LABEL_DRAFT_CHARS = 6000;
+
+/**
+ * What every stored field will hold, in one place.
+ *
+ * Two fields had ceilings and the rest had none, so a contribution could carry two
+ * hundred thousand characters of title onto the public record, into the curator's inbox,
+ * and into a tool response the catalogue describes as a summary. The numbers here are the
+ * ones `WEBMCP_TOOLS.md` already specified for the same fields; they were declared in the
+ * design and never reached the schema or the server.
+ *
+ * A ceiling refuses; it does not truncate. Storing a cut version of what someone wrote and
+ * reading it back whole makes two versions of one sentence (OB-1).
+ */
+export const MAX_TEXT = {
+  /** An identifier this system issued. Long enough for `SUB-…-museum_<uuid>`. */
+  id: 120,
+  /** One line naming the material. */
+  title: 140,
+  /** The body of a contribution, and any single prose answer inside it. */
+  body: 4000,
+  /** A person, archive, or agent named as the source. */
+  source: 120,
+  /** What the contributor is asking the museum to do. */
+  requestedOutcome: 140,
+  /** Why a record or a review is being asked for. */
+  basis: 2000,
+  /** Why an official change is justified, stored in the immutable approval snapshot. */
+  justification: 2000,
+  /** An accession number as the museum would write it. */
+  accession: 60,
+  /** Date, material, and origin as they appear on a record. */
+  period: 60,
+  material: 200,
+  origin: 200,
+  /** A curator's question, matching what `check_submission` reads back. */
+  question: MAX_CLARIFICATION_CHARS,
+  /** A published label. */
+  draft: MAX_LABEL_DRAFT_CHARS,
+  /** A search phrase. Longer than any real one and short enough to cost nothing. */
+  query: 200,
+  /** A note a curator attaches when closing a referral. */
+  note: 2000,
+  /** An edit reason recorded with an approval. */
+  editReason: 500,
+  /** Alternative text describing one image. */
+  altText: 300,
+} as const;
+
+/**
+ * How many ids one call may cite.
+ *
+ * Each id becomes one bound SQL variable, and D1 stops at a hundred per statement, so an
+ * unbounded list reached the database and failed there rather than at the door. Twelve is
+ * the number `WEBMCP_TOOLS.md` §3.6 already specified for a citation.
+ */
+export const MAX_EVIDENCE_IDS = 12;
+
+/**
+ * The statuses a contribution can no longer be moved out of.
+ *
+ * `reflected in label` means its material is in the published record and `closed` means the
+ * review ended. The approval path has always refused to re-touch either, and the
+ * clarification path did not — so a question could drag a published contribution back to
+ * `needs information`, and the contributor's page went from its final stage to the middle
+ * of review while the record still carried their material (F6-5).
+ */
+export const SETTLED_SUBMISSION_STATUSES = ['reflected in label', 'closed'] as const;
+export const isSettledSubmission = (status: string) =>
+  (SETTLED_SUBMISSION_STATUSES as readonly string[]).includes(status);
+
 export type Visibility = 'public' | 'restricted' | 'sealed';
 export type AssertionMode = 'verified_fact' | 'attributed_claim' | 'open_question';
 

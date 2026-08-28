@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { ReactNode, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { registerWebMcpTools } from '@/lib/webmcp/register';
 import { useLiveRecord } from '@/lib/live/use-live-record';
-import { curatorTools } from '@/lib/webmcp/tools';
+import { communityTools, curatorTools } from '@/lib/webmcp/tools';
 import { diffLabelText } from '@/lib/label-diff';
 
 export type PendingApproval = {
@@ -128,13 +128,17 @@ export function CuratorShell({
     return () => document.removeEventListener('keydown', keyboard);
   }, [drawer]);
 
+  // Both of these used to navigate whether or not the write landed, so a failure looked
+  // like the button had done nothing — or worse, like it had worked (F6-8).
   async function switchToCommunity() {
-    await fetch('/api/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ role: 'community' }) });
+    const response = await fetch('/api/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ role: 'community' }) }).catch(() => null);
+    if (!response?.ok) { setError('Could not switch to the community view. Try again.'); return; }
     location.href = '/';
   }
 
   async function resetWorkspace() {
-    await fetch('/api/reset', { method: 'POST' });
+    const response = await fetch('/api/reset', { method: 'POST' }).catch(() => null);
+    if (!response?.ok) { setError('The workspace could not be reset. Try again.'); return; }
     location.href = '/curator';
   }
 
@@ -204,6 +208,9 @@ export function CuratorShell({
             <span>⌘</span>WebMCP tools <b className="tool-count">{curatorTools.length}</b>
           </button>
           <button type="button" onClick={resetWorkspace}><span>↺</span>Fresh workspace</button>
+          {/* A failed switch or reset used to navigate anyway, or do nothing visible. The
+              sidebar is where those two buttons are, so it is where their answer belongs. */}
+          {error && <p className="console-error" role="alert">{error}</p>}
         </div>
         <p>Demo workspace<br /><strong>Fictional collection</strong></p>
       </aside>
@@ -239,7 +246,10 @@ export function CuratorShell({
                       ? 'Live record: polling every 2s. The stream was unavailable, so this surface falls back to asking.'
                       : 'Live record: connecting…'}
                 </p>
-                <p>These tools are registered on the curator surface only. Community pages register a different set of six. The server re-checks the role on every call.</p>
+                {/* Counted from the catalogue. This said "six" while the community surface
+                    registered nine — a wrong number in the panel whose job is to report the
+                    surface honestly (F6-6). */}
+                <p>These tools are registered on the curator surface only. Community pages register a different set of {communityTools.length}. The server re-checks the role on every call.</p>
                 <ul className="tool-list">
                   {curatorTools.map((tool) => (
                     <li key={tool.name}>

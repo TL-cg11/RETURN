@@ -2,6 +2,7 @@ import { getAsset, recordActivity, setAssetVisibility } from '@/db/queries';
 import type { Consent } from '@/lib/domain/types';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
 import { sessionFromRequest } from '@/lib/session';
+import { guarded } from '@/lib/http/input';
 
 /**
  * Opens one asset to public display, or withdraws it again.
@@ -14,7 +15,7 @@ import { sessionFromRequest } from '@/lib/session';
  * whether restricted material may be shown publicly would always answer no and the
  * question could never be put.
  */
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+export const POST = guarded(async (request: Request, { params }: { params: Promise<{ id: string }> }) => {
   const { role, museumId } = await sessionFromRequest(request);
   if (role !== 'curator') return Response.json({ outcome: 'denied', risk: 'LOW', reason: 'Curator role required.', recovery: 'Switch to the curator workspace.' }, { status: 403 });
 
@@ -47,4 +48,4 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     risk: policy.risk, policyDecision: 'applied', result: publish ? 'public' : 'restricted',
   });
   return Response.json({ ...policy, asset_id: id, visibility: publish ? 'public' : 'restricted' });
-}
+});

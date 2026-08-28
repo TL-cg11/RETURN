@@ -7,7 +7,8 @@ import {
 } from '@/db/queries';
 import { APPROVAL_TTL_MS, ensureDatabase, sha256 } from '@/db/setup';
 import { buildLabelApprovalSnapshot, canonicalJson } from '@/lib/approval-snapshot';
-import { CONSENT_LEVELS, MAX_CLARIFICATION_CHARS, MAX_LABEL_DRAFT_CHARS, isConsent, isQuotable, type Authority, type Consent, type EvidenceRecord, type LabelAssertion, type Visibility } from '@/lib/domain/types';
+import { CONSENT_LEVELS, MAX_EVIDENCE_IDS, MAX_TEXT, isConsent, isQuotable, isSettledSubmission, type Authority, type Consent, type EvidenceRecord, type LabelAssertion, type Visibility } from '@/lib/domain/types';
+import { refused, takeStringList, takeText } from '@/lib/http/input';
 import { assetAccess, MAX_ASSETS_PER_CONTRIBUTION } from '@/lib/assets/access';
 import { slugFor } from '@/lib/community/object-input';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
@@ -127,8 +128,18 @@ function listedSubmission(row: SubmissionRow) {
  * citation — an id that does not exist here, or one that belongs to a different object.
  * Those are input problems and are reported as input problems, by id.
  */
-async function refsFrom(museumId: string, args: Record<string, unknown>, objectId: string) {
-  const ids = Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [];
+/**
+ * The cited ids, checked once for every tool that takes them.
+ *
+ * Each id becomes a bound SQL variable, and D1 stops at a hundred per statement, so an
+ * unbounded list reached the database and failed there — six tools answering `error` for
+ * an input the door could have refused (F6-2).
+ */
+function citedIds(args: Record<string, unknown>) {
+  return takeStringList(args.evidence_ids, 'evidence_ids', { max: MAX_EVIDENCE_IDS, label: 'evidence_ids' });
+}
+
+async function refsFrom(museumId: string, args: Record<string, unknown>, objectId: string, ids: string[]) {
   const known = await getEvidenceByIds(museumId, ids, 'curator');
   const refs = ids.map((id) => {
     const found = known.find((item) => item.id === id && item.objectId === objectId);
@@ -175,8 +186,7 @@ function citationProblem(resolved: { unknown: string[]; otherObject: string[] },
  * workspace is still the boundary — ids outside it resolve to sealed and private, so
  * they carry no authority.
  */
-async function refsForNewRecord(museumId: string, args: Record<string, unknown>) {
-  const ids = Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [];
+async function refsForNewRecord(museumId: string, ids: string[]) {
   const known = await getEvidenceByIds(museumId, ids, 'curator');
   return ids.map((id) => {
     const found = known.find((item) => item.id === id);
@@ -264,9 +274,11 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
   switch (name) {
     /* ------------- Community: discovery ------------- */
     case 'search_collection': {
-      const matches = await searchCollection(museumId, typeof args.query === 'string' ? args.query : '', 'public');
+      const query = takeText(args.query, 'query', { max: MAX_TEXT.query, label: 'A search phrase' });
+      if (refused(query)) return query.refusal;
+      const matches = await searchCollection(museumId, query, 'public');
       return Response.json({
-        query: args.query ?? null,
+        query: query || null,
         count: matches.length,
         objects: matches.map(({ id, title, date, region, gap, status }) => ({ id, title, date, region, gap, status })),
       });
@@ -304,21 +316,21 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
       // parameter was declared, described, and then ignored — every call returned the
       // stored timeline whole, so an agent narrowing to two sources got the same answer
       // as one that cited nothing and had no way to tell.
-      const cited = await refsFrom(museumId, args, record.id);
-      const citedIds = Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [];
-      if (citedIds.length === 0) {
+      const timelineCited = citedIds(args);
+      if (refused(timelineCited)) return timelineCited.refusal;
+      if (timelineCited.length === 0) {
         return Response.json({
           ...body,
           note: 'Working timeline only. The official record is unchanged. No evidence was cited, so this is the whole recorded timeline.',
           ...evaluatePolicy({ actor: role, action: 'draft_label', museumMatch: true }),
         });
       }
-      const citation = citationProblem(cited, record.id);
+      const citation = citationProblem(await refsFrom(museumId, args, record.id, timelineCited), record.id);
       if (citation) return citation;
-      const resting = record.timeline.filter((event) => event.evidenceRefs.some((ref) => citedIds.includes(ref)));
+      const resting = record.timeline.filter((event) => event.evidenceRefs.some((ref) => timelineCited.includes(ref)));
       return Response.json({
         object_id: record.id,
-        cited_evidence_ids: citedIds,
+        cited_evidence_ids: timelineCited,
         events: resting,
         // Gaps survive the filter. A working timeline that drops the unresolved years
         // because no one cited them reads as a complete history, which is the one
@@ -338,8 +350,23 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
     case 'submit_context_claim': {
       const record = await objectRecord(museumId, objectId, 'public');
       if (!record) return invalid(...NO_OBJECT);
-      const claim = typeof args.claim === 'string' ? args.claim.trim() : '';
-      const title = typeof args.title === 'string' && args.title.trim() ? args.title.trim() : claim.slice(0, 80);
+      // Every stored field is read the same way: refused if it is not text, refused if it
+      // is longer than what this system will hold, never coerced (F6-3, F6-4). `String({})`
+      // put "[object Object]" on the public record, and an uncapped title put two hundred
+      // thousand characters there.
+      const claim = takeText(args.claim, 'claim', { max: MAX_TEXT.body, label: 'A claim' });
+      if (refused(claim)) return claim.refusal;
+      const givenTitle = takeText(args.title, 'title', { max: MAX_TEXT.title, label: 'A title' });
+      if (refused(givenTitle)) return givenTitle.refusal;
+      const description = takeText(args.description, 'description', { max: MAX_TEXT.body, fallback: claim, label: 'A description' });
+      if (refused(description)) return description.refusal;
+      const source = takeText(args.source, 'source', { max: MAX_TEXT.source, fallback: 'Community agent', label: 'A source' });
+      if (refused(source)) return source.refusal;
+      const requestedOutcome = takeText(args.requested_outcome, 'requested_outcome', { max: MAX_TEXT.requestedOutcome, fallback: 'Add context', label: 'A requested outcome' });
+      if (refused(requestedOutcome)) return requestedOutcome.refusal;
+      const evidenceRefs = takeStringList(args.evidence_refs, 'evidence_refs', { max: MAX_EVIDENCE_IDS, label: 'evidence_refs' });
+      if (refused(evidenceRefs)) return evidenceRefs.refusal;
+      const title = givenTitle || claim.slice(0, 80);
       if (!title) return invalid(name === 'submit_evidence' ? 'title' : 'claim', 'A contribution needs a short title or claim.', 'Describe the material in one line.');
 
       // MCP-E1 — an unrecognised consent level used to be stored verbatim and then read
@@ -357,10 +384,10 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
       const createdAt = Date.now();
       await db.prepare('INSERT INTO submissions (id,museum_id,object_id,kind,title,description,source,consent,requested_outcome,contributor_name,contributor_role,evidence_refs,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
         .bind(id, museumId, record.id, name === 'submit_evidence' ? 'Evidence' : 'Context claim', title,
-          String(args.description ?? args.claim ?? ''), String(args.source ?? 'Community agent'),
+          description, source,
           consent,
-          String(args.requested_outcome ?? 'Add context'), String(args.source ?? 'Community agent'), role,
-          JSON.stringify(Array.isArray(args.evidence_refs) ? args.evidence_refs.map(String) : []), 'received', createdAt, createdAt).run();
+          requestedOutcome, source, role,
+          JSON.stringify(evidenceRefs), 'received', createdAt, createdAt).run();
       await recordActivity(museumId, 'Community Agent', 'submitted new evidence', title, {
         tool: name, target: id, risk: 'MEDIUM', policyDecision: 'applied', result: id,
       });
@@ -444,7 +471,9 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
 
     case 'get_review_case':
     case 'compare_evidence': {
-      const requestedEvidenceIds = Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [];
+      const requested = citedIds(args);
+      if (refused(requested)) return requested.refusal;
+      const requestedEvidenceIds = requested;
       const selectedEvidence = name === 'compare_evidence'
         ? await getEvidenceByIds(museumId, requestedEvidenceIds, 'agent')
         : [];
@@ -508,15 +537,16 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
       // An agent narrowing to the sources it trusts now gets a draft that reflects that,
       // and the same citation rules as a proposal, so a draft cannot pass through ids
       // that propose_label_update would refuse.
-      const citedIds = Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [];
-      if (citedIds.length > 0) {
-        const citation = citationProblem(await refsFrom(museumId, args, record.id), record.id);
+      const draftCited = citedIds(args);
+      if (refused(draftCited)) return draftCited.refusal;
+      if (draftCited.length > 0) {
+        const citation = citationProblem(await refsFrom(museumId, args, record.id, draftCited), record.id);
         if (citation) return citation;
       }
-      const evidence = citedIds.length > 0 ? all.filter((item) => citedIds.includes(item.id)) : all;
+      const evidence = draftCited.length > 0 ? all.filter((item) => draftCited.includes(item.id)) : all;
       return Response.json({
         object_id: record.id,
-        ...(citedIds.length > 0 ? { rests_on: citedIds } : {}),
+        ...(draftCited.length > 0 ? { rests_on: draftCited } : {}),
         draft: record.gap
           ? `${record.title} is documented from ${record.date}. Its movement between ${record.gap} remains under joint research.`
           : `${record.title}, ${record.date}. ${record.material}.`,
@@ -532,11 +562,21 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
       const question = typeof args.question === 'string' ? args.question.trim() : '';
       if (!question) return invalid('question', 'A clarification needs a question.', 'Ask about date, place, source, or consent scope.');
       // The same ceiling as the console route, for the same reason (OB-1).
-      if (question.length > MAX_CLARIFICATION_CHARS) {
-        return invalid('question', `A clarification is at most ${MAX_CLARIFICATION_CHARS} characters, and this one is ${question.length}.`, 'Ask one focused question; open a second one for the rest.');
+      if (question.length > MAX_TEXT.question) {
+        return invalid('question', `A clarification is at most ${MAX_TEXT.question} characters, and this one is ${question.length}.`, 'Ask one focused question; open a second one for the rest.');
       }
       const row = id ? await getSubmission(museumId, id) : null;
       if (!row) return invalid('submission_id', 'No contribution with that id exists in this workspace.', 'Call list_submissions to list open contributions.');
+      // The same guard the approval path carries, and the console route now carries too:
+      // a contribution whose material is published, or whose review has closed, does not go
+      // back to `needs information` (F6-5).
+      if (isSettledSubmission(row.status)) {
+        return Response.json({
+          outcome: 'denied', risk: 'MEDIUM', policy: 'submission_settled',
+          reason: `This contribution is ${row.status} and its review has ended.`,
+          recovery: 'Open a new contribution on the same record to carry the question forward.',
+        }, { status: 409 });
+      }
       // The agent surface stores the question the same way the console does. A question
       // asked through a tool is no less a question the contributor has to be able to read.
       const asked = await appendClarification(museumId, id, question, 'Curator Agent');
@@ -560,11 +600,15 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
       if (!draft) return invalid('draft', 'A proposal needs the label text it would publish.', 'Call draft_label first, then propose the text it returns.');
       // The ceiling WEBMCP_TOOLS §3.8 already declared. An approval snapshot is immutable
       // and hashed, so an unbounded draft is stored and re-read forever (OB-1).
-      if (draft.length > MAX_LABEL_DRAFT_CHARS) {
-        return invalid('draft', `A label is at most ${MAX_LABEL_DRAFT_CHARS} characters, and this draft is ${draft.length}.`, 'Shorten the label, or propose the change in more than one revision.');
+      if (draft.length > MAX_TEXT.draft) {
+        return invalid('draft', `A label is at most ${MAX_TEXT.draft} characters, and this draft is ${draft.length}.`, 'Shorten the label, or propose the change in more than one revision.');
       }
+      const justification = takeText(args.justification, 'justification', { max: MAX_TEXT.justification, label: 'The justification' });
+      if (refused(justification)) return justification.refusal;
 
-      const resolvedRefs = await refsFrom(museumId, args, record.id);
+      const proposeCited = citedIds(args);
+      if (refused(proposeCited)) return proposeCited.refusal;
+      const resolvedRefs = await refsFrom(museumId, args, record.id, proposeCited);
       const citation = citationProblem(resolvedRefs, record.id);
       if (citation) return citation;
       const policy = evaluatePolicy({ actor: role, action: 'publish_label', museumMatch: true, refs: resolvedRefs.refs, publicOutput: true });
@@ -573,8 +617,8 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
           ...policy, object_id: record.id, published: false,
           ...await escalate(museumId, policy, {
             tool: 'propose_label_update', objectId: record.id,
-            args: { object_id: record.id, draft, evidence_ids: args.evidence_ids ?? [] },
-            sourceRefs: Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [],
+            args: { object_id: record.id, draft, evidence_ids: proposeCited },
+            sourceRefs: proposeCited,
             action: 'denied unsupported official change',
             next: 'Compare a verified source, request clarification from the contributor, or continue with other objects.',
           }),
@@ -584,7 +628,7 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
       const approvalId = `APR-${crypto.randomUUID().slice(0, 12).toUpperCase()}`;
       const db = await ensureDatabase(museumId);
       const createdAt = Date.now();
-      const evidenceIds = Array.isArray(args.evidence_ids) ? [...new Set(args.evidence_ids.map(String))].sort() : [];
+      const evidenceIds = [...new Set(proposeCited)].sort();
       // Cited evidence only: the published revision must carry the assertions the
       // proposal was judged on, not everything the object happens to hold.
       const cited = (await getEvidenceByIds(museumId, evidenceIds, 'curator')).filter((item) => item.objectId === record.id);
@@ -593,7 +637,7 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
         objectId: record.id,
         objectVersion: record.version,
         draft,
-        justification: String(args.justification ?? ''),
+        justification,
         evidenceIds,
         assertions,
         evidence: cited,
@@ -612,7 +656,9 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
     case 'open_return_review': {
       const record = await objectRecord(museumId, objectId, 'agent');
       if (!record) return invalid(...NO_OBJECT);
-      const resolvedRefs = await refsFrom(museumId, args, record.id);
+      const reviewCited = citedIds(args);
+      if (refused(reviewCited)) return reviewCited.refusal;
+      const resolvedRefs = await refsFrom(museumId, args, record.id, reviewCited);
       const citation = citationProblem(resolvedRefs, record.id);
       if (citation) return citation;
       // The catalogue declares `basis` required and the handler used to substitute
@@ -620,7 +666,9 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
       // the review anyway (F4-1). A stewardship review is a HIGH action that asks a human
       // to weigh a claim; arriving with the reason invented by the server is not a claim.
       // `register_object` has always refused the same field, and this now matches it.
-      const basis = typeof args.basis === 'string' ? args.basis.trim() : '';
+      const basis$ = takeText(args.basis, 'basis', { max: MAX_TEXT.basis, label: 'A basis' });
+      if (refused(basis$)) return basis$.refusal;
+      const basis = basis$;
       if (!basis) return invalid('basis', 'A stewardship review needs the reason it is being asked for.', 'Say what makes this object a candidate for review, and cite the evidence for it.');
       const policy = evaluatePolicy({ actor: role, action: 'open_return_review', museumMatch: true, refs: resolvedRefs.refs });
       if (policy.outcome === 'pending_approval') {
@@ -633,8 +681,8 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
         note: 'This opens a human review process only. It does not transfer ownership or move the object.',
         ...(policy.outcome === 'pending_approval' ? {} : await escalate(museumId, policy, {
           tool: 'open_return_review', objectId: record.id,
-          args: { object_id: record.id, basis, evidence_ids: args.evidence_ids ?? [] },
-          sourceRefs: Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [],
+          args: { object_id: record.id, basis, evidence_ids: reviewCited },
+          sourceRefs: reviewCited,
           action: 'was denied a stewardship review',
           next: 'Attach a verified institutional record, or ask a curator to review the community material first.',
         })),
@@ -760,9 +808,19 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
     // writes to `objects`. The curator console's own route does that, and only after an
     // explicit human confirmation.
     case 'register_object': {
-      const title = typeof args.title === 'string' ? args.title.trim() : '';
-      const accession = typeof args.accession === 'string' ? args.accession.trim() : '';
-      const basis = typeof args.basis === 'string' ? args.basis.trim() : '';
+      const title$ = takeText(args.title, 'title', { max: MAX_TEXT.title, label: 'A title' });
+      if (refused(title$)) return title$.refusal;
+      const accession$ = takeText(args.accession, 'accession', { max: MAX_TEXT.accession, label: 'An accession number' });
+      if (refused(accession$)) return accession$.refusal;
+      const basis$ = takeText(args.basis, 'basis', { max: MAX_TEXT.basis, label: 'A basis' });
+      if (refused(basis$)) return basis$.refusal;
+      const period = takeText(args.period, 'period', { max: MAX_TEXT.period, label: 'A period' });
+      if (refused(period)) return period.refusal;
+      const material = takeText(args.material, 'material', { max: MAX_TEXT.material, label: 'A material' });
+      if (refused(material)) return material.refusal;
+      const origin = takeText(args.origin, 'origin', { max: MAX_TEXT.origin, label: 'An origin' });
+      if (refused(origin)) return origin.refusal;
+      const title = title$, accession = accession$, basis = basis$;
       if (!title) return invalid('title', 'A proposed record needs a title.', 'Name the object as the record would.');
       if (!accession) return invalid('accession', 'A proposed record needs an accession number.', 'Supply the accession number the museum would assign.');
       if (!basis) return invalid('basis', 'Say why this object belongs in the record.', 'Explain the basis for adding it.');
@@ -780,9 +838,11 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
           'Propose the next unused accession number, or add evidence to the existing record.');
       }
 
-      const refs = await refsForNewRecord(museumId, args);
+      const registerCited = citedIds(args);
+      if (refused(registerCited)) return registerCited.refusal;
+      const refs = await refsForNewRecord(museumId, registerCited);
       const policy = evaluatePolicy({ actor: role, action: 'register_object', museumMatch: true, refs });
-      const proposal = { title, accession, period: args.period ?? null, material: args.material ?? null, origin: args.origin ?? null, basis };
+      const proposal = { title, accession, period: period || null, material: material || null, origin: origin || null, basis };
 
       if (policy.outcome === 'pending_approval') {
         // Queued as an escalation rather than an approval row: the approval contract is
@@ -791,7 +851,7 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
         const proposalId = await createEscalation(museumId, {
           objectId: null, tool: 'register_object', args: proposal,
           policy: 'pending_human_registration',
-          sourceRefs: Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [],
+          sourceRefs: registerCited,
         });
         await recordActivity(museumId, 'Curator Agent', 'proposed a new collection record', `${title} · ${accession}`, {
           tool: 'register_object', target: proposedId, risk: 'HIGH', policyDecision: 'pending_approval', result: proposalId,
@@ -811,7 +871,7 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
           // put an "Open record" link on the curator's overview that led to a 404 (EA-4).
           escalationObjectId: null,
           args: proposal,
-          sourceRefs: Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [],
+          sourceRefs: registerCited,
           action: 'was denied a new collection record',
           next: 'Cite a verified institutional record, or ask a curator to register it directly.',
         }),

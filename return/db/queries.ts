@@ -266,13 +266,23 @@ export async function getEvidenceByIds(museumId: string, ids: string[], access: 
   return (result.results ?? []).map((row) => mapEvidence(row, access));
 }
 
+/**
+ * Contributions in a workspace, newest first.
+ *
+ * Bounded, because every caller of this reads whole rows: the console counted them by
+ * fetching them, and one contribution with a very long title made the inbox a megabyte
+ * (F6-7). The ceiling is far above any real review queue and finite, which is the
+ * property that matters.
+ */
+export const MAX_SUBMISSION_ROWS = 500;
+
 export async function listSubmissions(museumId: string, filter: { status?: string; objectId?: string } = {}) {
   const db = await ensureDatabase(museumId);
   const where = ['museum_id=?'];
   const values: unknown[] = [museumId];
   if (filter.status) { where.push('status=?'); values.push(filter.status); }
   if (filter.objectId) { where.push('object_id=?'); values.push(filter.objectId); }
-  const result = await db.prepare(`SELECT * FROM submissions WHERE ${where.join(' AND ')} ORDER BY created_at DESC`).bind(...values).all<SubmissionRow>();
+  const result = await db.prepare(`SELECT * FROM submissions WHERE ${where.join(' AND ')} ORDER BY created_at DESC LIMIT ${MAX_SUBMISSION_ROWS}`).bind(...values).all<SubmissionRow>();
   return result.results ?? [];
 }
 
@@ -287,10 +297,19 @@ export async function setSubmissionStatus(museumId: string, id: string, status: 
   return (result.meta?.changes ?? 0) > 0;
 }
 
+/**
+ * How many contributions sit in each status.
+ *
+ * Counted in SQL. This used to read every row — including bodies — to take their length,
+ * and it runs on every curator page load (F6-7).
+ */
 export async function countByStatus(museumId: string) {
-  const rows = await listSubmissions(museumId);
-  const counts: Record<string, number> = { all: rows.length };
-  for (const status of SUBMISSION_STATUSES) counts[status] = rows.filter((row) => row.status === status).length;
+  const db = await ensureDatabase(museumId);
+  const result = await db.prepare('SELECT status, COUNT(*) AS n FROM submissions WHERE museum_id=? GROUP BY status')
+    .bind(museumId).all<{ status: string; n: number }>();
+  const rows = result.results ?? [];
+  const counts: Record<string, number> = { all: rows.reduce((total, row) => total + row.n, 0) };
+  for (const status of SUBMISSION_STATUSES) counts[status] = rows.find((row) => row.status === status)?.n ?? 0;
   return counts;
 }
 

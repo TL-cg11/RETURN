@@ -554,3 +554,7 @@ a { color:inherit; text-decoration:none; }
 @media (max-width:700px) {
   .lightbox-foot { flex-wrap:wrap; }
 }
+
+/* A sidebar action that failed says so where the action is (F6-8). */
+.console-error { margin:.6rem .8rem 0; color:#e0b6a4; font-size:.6rem; line-height:1.45; }
+.switch-failed { color:var(--oxide); font-size:.62rem; margin-left:.6rem; }

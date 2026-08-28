@@ -2,6 +2,7 @@ import { createObject, recordActivity } from '@/db/queries';
 import { missingObjectFields, objectFromDraft, type ObjectDraft } from '@/lib/community/object-input';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
 import { sessionFromRequest } from '@/lib/session';
+import { guarded } from '@/lib/http/input';
 
 /**
  * Registers a new collection record (FR-K5).
@@ -14,7 +15,7 @@ import { sessionFromRequest } from '@/lib/session';
  * An agent never reaches this route. `register_object` on the tool surface produces a
  * proposal for a curator and creates nothing (FR-X3).
  */
-export async function POST(request: Request) {
+export const POST = guarded(async (request: Request) => {
   const { role, museumId } = await sessionFromRequest(request);
   if (role !== 'curator') {
     return Response.json({
@@ -55,4 +56,4 @@ export async function POST(request: Request) {
     risk: policy.risk, policyDecision: 'applied', result: input.id,
   });
   return Response.json({ outcome: 'applied', risk: policy.risk, object_id: input.id, accession: input.accession, title: input.title });
-}
+});

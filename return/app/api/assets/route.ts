@@ -4,6 +4,7 @@ import { putAsset, storageKeyFor } from '@/lib/assets/storage';
 import { readImageDimensions } from '@/lib/assets/image-dimensions';
 import type { ImageDimensions } from '@/lib/assets/image-dimensions';
 import { sessionFromRequest } from '@/lib/session';
+import { guarded } from '@/lib/http/input';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,7 +18,7 @@ export const dynamic = 'force-dynamic';
  * `RETURN_PLAN.md` §15.1 keeps binaries off the tool surface, so this route is the
  * only way bytes enter the system.
  */
-export async function POST(request: Request) {
+export const POST = guarded(async (request: Request) => {
   const { museumId, role } = await sessionFromRequest(request);
 
   const form = await request.formData().catch(() => null);
@@ -72,4 +73,4 @@ export async function POST(request: Request) {
 
   return Response.json({ outcome: 'applied', id, kind: allowed.kind, file_name: fileName, byte_size: file.size,
     width: dimensions?.width ?? null, height: dimensions?.height ?? null, url: `/api/assets/${id}` });
-}
+});

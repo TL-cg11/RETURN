@@ -1,9 +1,10 @@
 import { appendClarification, getSubmission, recordActivity, setSubmissionStatus } from '@/db/queries';
-import { MAX_CLARIFICATION_CHARS } from '@/lib/domain/types';
+import { MAX_TEXT, isSettledSubmission } from '@/lib/domain/types';
+import { guarded, readJsonBody, refused, takeText } from '@/lib/http/input';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
 import { sessionFromRequest } from '@/lib/session';
 
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+export const POST = guarded(async (request: Request, { params }: { params: Promise<{ id: string }> }) => {
   const { role, museumId } = await sessionFromRequest(request);
   // This route answered its role check and its not-found path with `{ error }` while its
   // own validation answered in the four fields — two shapes inside one file (F5-2). The
@@ -13,18 +14,27 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
 
   const { id } = await params;
-  const body = await request.json() as { question?: string };
-  const question = (body.question ?? '').trim();
-  if (!question) return Response.json({ outcome: 'invalid', field: 'question', reason: 'A clarification needs a question.', recovery: 'Ask about date, place, source, or consent scope.' }, { status: 400 });
-  // Refused rather than trimmed, so the contributor reads the question the curator wrote
-  // and the agent reads the same one (OB-1).
-  if (question.length > MAX_CLARIFICATION_CHARS) {
-    return Response.json({ outcome: 'invalid', field: 'question', reason: `A clarification is at most ${MAX_CLARIFICATION_CHARS} characters, and this one is ${question.length}.`, recovery: 'Ask one focused question; open a second one for the rest.' }, { status: 400 });
-  }
+  const parsed = await readJsonBody(request);
+  if (refused(parsed)) return parsed.refusal;
+  // `(body.question ?? '').trim()` threw for anything that was not a string, and the
+  // platform answered with an empty 500 (F6-1). Refused rather than trimmed, so the
+  // contributor reads the question the curator wrote and the agent reads the same one.
+  const asking = takeText(parsed.question, 'question', { max: MAX_TEXT.question, required: true, label: 'A clarification' });
+  if (refused(asking)) return asking.refusal;
+  const question = asking;
 
   const submission = await getSubmission(museumId, id).catch(() => null);
   if (!submission) {
     return Response.json({ outcome: 'invalid', field: 'submission_id', reason: 'No contribution with that id exists in this workspace.', recovery: 'Open the contribution from the submission inbox.' }, { status: 404 });
+  }
+
+  // The same guard the approval path has carried all along (F6-5).
+  if (isSettledSubmission(submission.status)) {
+    return Response.json({
+      outcome: 'denied', policy: 'submission_settled',
+      reason: `This contribution is ${submission.status} and its review has ended.`,
+      recovery: 'Open a new contribution on the same record to carry the question forward.',
+    }, { status: 409 });
   }
 
   const policy = evaluatePolicy({ actor: role, action: 'request_clarification', museumMatch: submission.museum_id === museumId });
@@ -38,4 +48,4 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     risk: policy.risk, policyDecision: policy.outcome, result: 'needs information',
   });
   return Response.json({ id, ...policy, status: 'needs information', question, asked });
-}
+});

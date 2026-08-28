@@ -1,5 +1,6 @@
 import { getEscalation, recordActivity, resolveEscalation } from '@/db/queries';
 import { sessionFromRequest } from '@/lib/session';
+import { guarded } from '@/lib/http/input';
 
 const ACTIONS = { reviewed: 'resolved a policy referral', dismissed: 'dismissed a policy referral' } as const;
 type Action = keyof typeof ACTIONS;
@@ -11,7 +12,7 @@ type Action = keyof typeof ACTIONS;
  * Resolving changes no object, label, or evidence — it only records that a
  * curator saw the refusal and what they decided about it.
  */
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+export const POST = guarded(async (request: Request, { params }: { params: Promise<{ id: string }> }) => {
   const { role, museumId } = await sessionFromRequest(request);
   if (role !== 'curator') return Response.json({ outcome: 'denied', risk: 'LOW', reason: 'Curator role required.', recovery: 'Switch to the curator workspace.' }, { status: 403 });
 
@@ -41,4 +42,4 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     });
 
   return Response.json({ id, status: action, resolved: true });
-}
+});
