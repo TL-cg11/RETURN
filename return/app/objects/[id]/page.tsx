@@ -1,9 +1,10 @@
 import { NavLink as Link } from '@/components/shared/nav-link';
 import { notFound } from 'next/navigation';
 import { LabelFlip } from '@/components/community/label-flip';
+import { LabelRevisionDiff } from '@/components/community/label-revision-diff';
 import { ObjectGallery, type GalleryImage } from '@/components/community/object-gallery';
 import { CommunityHeader } from '@/components/shared/community-header';
-import { listObjectAssets, listPublicContributions } from '@/db/queries';
+import { listLabelPublications, listObjectAssets, listPublicContributions } from '@/db/queries';
 import { assetAccess } from '@/lib/assets/access';
 import { CONTRIBUTION_KINDS, fieldsFor, summariseDetail, type ContributionKind, type KindDetail } from '@/lib/community/contribution';
 import type { Consent, Visibility } from '@/lib/domain/types';
@@ -62,24 +63,30 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
   if (!record) notFound();
   const featured = record.id === 'moonbird-mask';
 
-  const [assetRows, allContributions] = await Promise.all([
+  const [assetRows, allContributions, publications] = await Promise.all([
     listObjectAssets(museumId, record.id),
     listPublicContributions(museumId, record.id),
+    listLabelPublications(museumId, record.id),
   ]);
   // Bounded like every other list on the site. A public record page that grows without
   // limit as contributions arrive is the same defect FR-B2 and FR-M4 fixed elsewhere.
   const contributions = allContributions.slice(0, MAX_SHOWN_CONTRIBUTIONS);
   // This page is public, so it is judged as a community session regardless of who is
   // looking. A curator viewing the public record must see the public record.
-  const images: GalleryImage[] = assetRows
+  const publicImageRows = assetRows
     .filter((row) => row.kind === 'image')
-    .filter((row) => assetAccess({ museumId: row.museum_id, visibility: row.visibility as Visibility, consent: row.consent as Consent }, { role: 'community', museumId }) === 'serve')
+    .filter((row) => assetAccess({ museumId: row.museum_id, visibility: row.visibility as Visibility, consent: row.consent as Consent }, { role: 'community', museumId }) === 'serve');
+  const images: GalleryImage[] = publicImageRows
     // A filename is not a description, and an uploaded one can carry a person's name.
     .map((row, index) => ({
       id: row.id,
       alt: row.alt_text || `${record.title}, contributed photograph ${index + 1}`,
       caption: row.caption, url: `/api/assets/${row.id}`,
+      sourceLabel: row.submission_id ? 'Community contribution' : 'Museum collection image',
+      addedLabel: formatReviewDate(row.created_at) ?? 'Date not recorded',
     }));
+  const currentPublication = publications[0];
+  const previousPublication = publications[1];
 
   return (
     <main>
@@ -98,7 +105,7 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
             </div>
           </ObjectGallery>
           <p className="image-disclaimer">{images.length > 0
-            ? `${images.length} image${images.length === 1 ? '' : 's'} on this record · fictional collection material`
+            ? `${images.length} public image${images.length === 1 ? '' : 's'} on this record · source and date shown with each image`
             : 'Fictional collection image · created for this demonstration'}</p>
         </div>
 
@@ -119,6 +126,10 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
 
       <LabelFlip label={record.label} questions={record.questions} revision={record.labelRevision}
         assertions={record.labelAssertions} lastReviewed={formatReviewDate(record.labelPublishedAt)} />
+
+      {currentPublication && previousPublication && (
+        <LabelRevisionDiff before={previousPublication.body} after={currentPublication.body} revision={currentPublication.revision_number} />
+      )}
 
       <section className="timeline-section">
         <div className="section-heading compact">
@@ -160,6 +171,7 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
           <ul className="contributed-list">
             {contributions.map((row) => {
               const details = parseDetails(row.details);
+              const attachedImages = publicImageRows.filter((image) => image.submission_id === row.id);
               return (
                 <li key={row.id}>
                   <div className="contributed-head">
@@ -167,6 +179,22 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
                     <strong>{row.title}</strong>
                     <small>{row.kind} · {row.consent === 'public_attributed' && row.source ? row.source : 'Contributor chose not to be named'}</small>
                   </div>
+                  {attachedImages.length > 0 && (
+                    <div className="contributed-media">
+                      {attachedImages.map((image, index) => (
+                        <figure key={image.id}>
+                          <div className="contributed-image-frame">
+                            {/* eslint-disable-next-line @next/next/no-img-element -- protected asset route, not a static import */}
+                            <img src={`/api/assets/${image.id}`} alt={image.alt_text || `${row.title}, photograph ${index + 1}`} />
+                          </div>
+                          <figcaption>
+                            <span>Community contribution · {formatReviewDate(image.created_at) ?? 'Date not recorded'}</span>
+                            {image.caption || image.alt_text || 'Contributed photograph'}
+                          </figcaption>
+                        </figure>
+                      ))}
+                    </div>
+                  )}
                   {details.length > 0 ? (
                     <div className="contributed-detail">
                       {details.map((detail) => (

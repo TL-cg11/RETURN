@@ -2,7 +2,14 @@
 
 import { useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 
-export type GalleryImage = { id: string; alt: string; caption: string; url: string };
+export type GalleryImage = {
+  id: string;
+  alt: string;
+  caption: string;
+  url: string;
+  sourceLabel: 'Museum collection image' | 'Community contribution';
+  addedLabel: string;
+};
 
 /**
  * The object's photographs (FR-M1, FR-M2, FR-M3).
@@ -99,6 +106,7 @@ export function ObjectGallery({ images, children }: { images: GalleryImage[]; ch
 
       <div className="gallery-foot">
         <div className="gallery-caption">
+          <p className="gallery-origin"><span>{current.sourceLabel}</span><time>{current.addedLabel}</time></p>
           <p>{current.caption || current.alt}</p>
           {images.length > 1 && (
             <div className="gallery-dots" role="tablist" aria-label="Photographs">

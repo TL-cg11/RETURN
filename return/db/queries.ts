@@ -19,6 +19,12 @@ export type ApprovalRow = {
   created_at: number; expires_at: number; resolved_at: number | null;
 };
 
+export type LabelPublicationRow = {
+  id: string; museum_id: string; object_id: string; title: string; body: string;
+  assertions: string; evidence_refs: string; revision_number: number; approved_by: string;
+  published_at: number; superseded_at: number | null;
+};
+
 export type EscalationRow = {
   id: string; museum_id: string; object_id: string | null; tool: string; args: string; policy: string;
   source_refs: string; status: string; created_at: number; resolved_at: number | null;
@@ -130,6 +136,14 @@ export async function getObject(museumId: string, id: string, access: ObjectAcce
   const row = await db.prepare(`${OBJECT_SELECT} WHERE o.museum_id=? AND o.id=? AND ${objectVisibility(access)} LIMIT 1`)
     .bind(museumId, id).first<ObjectRow>();
   return row ? mapObject(row) : null;
+}
+
+/** Official publication history for the public revision comparison. */
+export async function listLabelPublications(museumId: string, objectId: string) {
+  const db = await ensureDatabase(museumId);
+  const result = await db.prepare('SELECT * FROM label_publications WHERE museum_id=? AND object_id=? ORDER BY revision_number DESC')
+    .bind(museumId, objectId).all<LabelPublicationRow>();
+  return result.results ?? [];
 }
 
 export async function listProvenanceEvents(museumId: string, objectId: string, access: EvidenceAccess = 'public') {
