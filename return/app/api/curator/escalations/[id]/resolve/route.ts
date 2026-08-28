@@ -13,17 +13,17 @@ type Action = keyof typeof ACTIONS;
  */
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { role, museumId } = await sessionFromRequest(request);
-  if (role !== 'curator') return Response.json({ error: 'Curator role required' }, { status: 403 });
+  if (role !== 'curator') return Response.json({ outcome: 'denied', risk: 'LOW', reason: 'Curator role required.', recovery: 'Switch to the curator workspace.' }, { status: 403 });
 
   const { id } = await params;
   const body = await request.json().catch(() => ({})) as { action?: string; note?: string };
   const action = body.action as Action;
   if (!(action in ACTIONS)) {
-    return Response.json({ error: 'Invalid resolution', expected: Object.keys(ACTIONS) }, { status: 400 });
+    return Response.json({ outcome: 'invalid', field: 'action', reason: `A resolution must be one of ${Object.keys(ACTIONS).join(', ')}.`, recovery: 'Send one of those actions.' }, { status: 400 });
   }
 
   const escalation = await getEscalation(museumId, id).catch(() => null);
-  if (!escalation) return Response.json({ error: 'Escalation not found' }, { status: 404 });
+  if (!escalation) return Response.json({ outcome: 'invalid', field: 'escalation_id', reason: 'No referral with that id exists in this workspace.', recovery: 'Open the curator overview to see the open referrals.' }, { status: 404 });
   if (escalation.status !== 'open') {
     return Response.json({
       outcome: 'denied', policy: 'escalation_already_resolved',

@@ -16,7 +16,7 @@ import { sessionFromRequest } from '@/lib/session';
  */
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { role, museumId } = await sessionFromRequest(request);
-  if (role !== 'curator') return Response.json({ error: 'Curator role required' }, { status: 403 });
+  if (role !== 'curator') return Response.json({ outcome: 'denied', risk: 'LOW', reason: 'Curator role required.', recovery: 'Switch to the curator workspace.' }, { status: 403 });
 
   const { id } = await params;
   const body = await request.json().catch(() => ({})) as { publish?: boolean };
@@ -25,7 +25,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const asset = await getAsset(museumId, id);
   // A sealed asset answers as absent here too, so this route cannot be used to
   // discover that one exists.
-  if (!asset || asset.visibility === 'sealed') return Response.json({ error: 'Asset not found' }, { status: 404 });
+  if (!asset || asset.visibility === 'sealed') return Response.json({ outcome: 'invalid', field: 'asset_id', reason: 'No asset with that id is available in this workspace.', recovery: 'Call list_object_assets to see what is available.' }, { status: 404 });
 
   const policy = evaluatePolicy({
     actor: 'curator_ui', action: 'publish_asset', museumMatch: asset.museum_id === museumId,
@@ -41,7 +41,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
 
   const changed = await setAssetVisibility(museumId, id, publish ? 'public' : 'restricted');
-  if (!changed) return Response.json({ error: 'Asset not found' }, { status: 404 });
+  if (!changed) return Response.json({ outcome: 'invalid', field: 'asset_id', reason: 'No asset with that id is available in this workspace.', recovery: 'Call list_object_assets to see what is available.' }, { status: 404 });
   await recordActivity(museumId, 'Mina, Curator', publish ? 'published an asset to the public record' : 'withdrew an asset from public display', asset.file_name, {
     actorRole: 'curator_ui', actorType: 'human', tool: 'publish_asset', target: id,
     risk: policy.risk, policyDecision: 'applied', result: publish ? 'public' : 'restricted',

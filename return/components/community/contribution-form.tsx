@@ -228,12 +228,12 @@ export function ContributionForm({ objectId, objects, fromObject }: { objectId: 
                   <p className="form-help">Uploads stay private to the curatorial team until a curator publishes them.</p>
                 </div>
               ) : field.type === 'textarea' ? (
-                <label key={field.name}>{field.label}{field.required && <b aria-hidden="true"> *</b>}
+                <label key={field.name}><span className="field-name">{field.label}{field.required && <b aria-hidden="true"> *</b>}</span>
                   <textarea rows={4} placeholder={field.placeholder} value={values[kind]?.[field.name] ?? ''} onChange={(event) => setValue(kind, field.name, event.target.value)} />
                   {field.help && <small className="field-help">{field.help}</small>}
                 </label>
               ) : (
-                <label key={field.name}>{field.label}{field.required && <b aria-hidden="true"> *</b>}
+                <label key={field.name}><span className="field-name">{field.label}{field.required && <b aria-hidden="true"> *</b>}</span>
                   <input placeholder={field.placeholder} value={values[kind]?.[field.name] ?? ''} onChange={(event) => setValue(kind, field.name, event.target.value)} />
                   {field.help && <small className="field-help">{field.help}</small>}
                 </label>

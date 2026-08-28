@@ -99,7 +99,7 @@ export function RegisterObject() {
           <div className="register-grid">
             {FIELDS.map((field) => (
               <label key={field.key}>
-                {field.label}{field.required && <b aria-hidden="true"> *</b>}
+                <span className="field-name">{field.label}{field.required && <b aria-hidden="true"> *</b>}</span>
                 <input value={String(draft[field.key] ?? '')} placeholder={field.placeholder} onChange={(event) => set(field.key, event.target.value)} />
               </label>
             ))}
@@ -121,7 +121,7 @@ export function RegisterObject() {
             <textarea rows={2} value={String(draft.description ?? '')} placeholder="What the record holds, and what is not yet known about it." onChange={(event) => set('description', event.target.value)} />
           </label>
           <label className="register-wide">
-            Public label<b aria-hidden="true"> *</b>
+            <span className="field-name">Public label<b aria-hidden="true"> *</b></span>
             <textarea rows={3} value={String(draft.label ?? '')} placeholder="The sentence the public will read first. It can be revised afterwards." onChange={(event) => set('label', event.target.value)} />
           </label>
           {slug && <p className="form-help">Public address · /objects/{slug}</p>}

@@ -121,14 +121,43 @@ export async function listObjects(museumId: string, access: ObjectAccess = 'publ
   return (result.results ?? []).map(mapObject);
 }
 
+/**
+ * Search the collection.
+ *
+ * The match runs in JavaScript rather than in SQL, which is the opposite of how this
+ * file treats every other filter — and deliberately so. D1 caps the length of a `LIKE`
+ * pattern far below SQLite's own limit, so `LIKE '%' || query || '%'` threw for any
+ * query of about fifty characters and the tool answered with a bare 500 (EA-1). It is
+ * the same defect FR2-X1 removed from the approval query; this was the last `LIKE` left.
+ *
+ * Moving the match out of SQL is safe here because **search is not a safety filter**.
+ * Visibility still runs in SQL, so this can only ever narrow a set the database already
+ * judged the caller may see; a bug in the matching below can hide a record from a search,
+ * never reveal one. A collection is small and already bounded per workspace.
+ */
 export async function searchObjects(museumId: string, query = '', access: ObjectAccess = 'public') {
   const db = await ensureDatabase(museumId);
+  const result = await db.prepare(`${OBJECT_SELECT} WHERE o.museum_id=? AND ${objectVisibility(access)} ORDER BY o.accession_number`)
+    .bind(museumId).all<ObjectRow>();
+  const rows = (result.results ?? []).map(mapObject);
   const trimmed = query.trim().toLowerCase();
-  const searchable = "lower(o.title || ' ' || o.material || ' ' || o.origin || ' ' || o.period || ' ' || o.record_status || ' ' || coalesce(o.provenance_gap,'')) LIKE ?";
-  const sql = `${OBJECT_SELECT} WHERE o.museum_id=? AND ${objectVisibility(access)}${trimmed ? ` AND ${searchable}` : ''} ORDER BY o.accession_number`;
-  const values = trimmed ? [museumId, `%${trimmed}%`] : [museumId];
-  const result = await db.prepare(sql).bind(...values).all<ObjectRow>();
-  return (result.results ?? []).map(mapObject);
+  if (!trimmed) return rows;
+  const haystack = (row: ReturnType<typeof mapObject>) =>
+    [row.title, row.material, row.region, row.date, row.status, row.gap ?? ''].join(' ').toLowerCase();
+  return rows.filter((row) => haystack(row).includes(trimmed));
+}
+
+/**
+ * The record already using an accession number, if any.
+ *
+ * `createObject` has always refused a clash, and the registration form asks first. The
+ * agent tool did not, so a proposal carrying a taken accession reached the curator queue
+ * and failed only when a human tried to act on it (EA-3).
+ */
+export async function objectWithAccession(museumId: string, accession: string) {
+  const db = await ensureDatabase(museumId);
+  return db.prepare('SELECT id,title FROM objects WHERE museum_id=? AND accession_number=? LIMIT 1')
+    .bind(museumId, accession).first<{ id: string; title: string }>();
 }
 
 export async function getObject(museumId: string, id: string, access: ObjectAccess = 'public') {

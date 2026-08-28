@@ -1,12 +1,13 @@
 import {
   attachAssetsToSubmission, countByStatus, createEscalation, getApproval, getAsset, getEvidenceByIds, getSubmission,
+  objectWithAccession,
   appendClarification, parseClarifications,
   listActivity, listApprovals, listObjectAssets, listObjects, listSubmissionAssets, listSubmissions, recordActivity,
   setSubmissionStatus, workspaceSummary, type AssetRow, type SubmissionRow,
 } from '@/db/queries';
 import { APPROVAL_TTL_MS, ensureDatabase, sha256 } from '@/db/setup';
 import { buildLabelApprovalSnapshot, canonicalJson } from '@/lib/approval-snapshot';
-import { CONSENT_LEVELS, isConsent, isQuotable, type Authority, type Consent, type EvidenceRecord, type LabelAssertion, type Visibility } from '@/lib/domain/types';
+import { CONSENT_LEVELS, MAX_CLARIFICATION_CHARS, MAX_LABEL_DRAFT_CHARS, isConsent, isQuotable, type Authority, type Consent, type EvidenceRecord, type LabelAssertion, type Visibility } from '@/lib/domain/types';
 import { assetAccess, MAX_ASSETS_PER_CONTRIBUTION } from '@/lib/assets/access';
 import { slugFor } from '@/lib/community/object-input';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
@@ -41,8 +42,15 @@ const NO_OBJECT = ['object_id', 'No object with that id is in this collection.',
  * Returns the fields to merge into the denial response; `{}` when the verdict is
  * not the kind a human should review, so the caller can spread it unconditionally.
  */
+/**
+ * Refer a refusal to a human, and log it either way.
+ *
+ * `objectId` is the record the activity log points at. `escalationObjectId` is what the
+ * escalation row stores, and defaults to it — they differ for a proposed record, which
+ * has a useful name in the log and no record behind it (EA-4).
+ */
 async function escalate(museumId: string, policy: PolicyResult, entry: {
-  tool: string; objectId: string; args: unknown; sourceRefs: string[]; action: string; next: string;
+  tool: string; objectId: string; escalationObjectId?: string | null; args: unknown; sourceRefs: string[]; action: string; next: string;
 }) {
   if (!policy.escalate) {
     await recordActivity(museumId, 'Policy Gateway', entry.action, policy.reason, {
@@ -51,7 +59,8 @@ async function escalate(museumId: string, policy: PolicyResult, entry: {
     return { next: entry.next };
   }
   const escalationId = await createEscalation(museumId, {
-    objectId: entry.objectId, tool: entry.tool, args: entry.args,
+    objectId: entry.escalationObjectId === undefined ? entry.objectId : entry.escalationObjectId,
+    tool: entry.tool, args: entry.args,
     policy: policy.policy ?? 'denied', sourceRefs: entry.sourceRefs,
   });
   await recordActivity(museumId, 'Policy Gateway', entry.action, policy.reason, {
@@ -193,7 +202,29 @@ function labelAssertions(record: { gap: string | null }, evidence: EvidenceRecor
   ];
 }
 
-export async function POST(request: Request, { params }: { params: Promise<{ name: string }> }) {
+/**
+ * Every tool answer, including the ones nobody planned.
+ *
+ * An unhandled throw used to leave the platform's own empty 500 (EA-1). Every other
+ * answer on this surface carries `outcome` and a recovery line, so an agent that hits
+ * one bare 500 has nothing to read and nothing to try. `error` is a fifth outcome
+ * precisely because it is not one of the four: the call was not applied, not queued,
+ * not refused by policy, and not the caller's mistake.
+ */
+export async function POST(request: Request, context: { params: Promise<{ name: string }> }) {
+  try {
+    return await handleTool(request, context);
+  } catch (error) {
+    console.error('[RE:TURN] tool call failed', error);
+    return Response.json({
+      outcome: 'error',
+      reason: 'The tool failed before it could answer. Nothing was written.',
+      recovery: 'Retry once; if it fails again, call a narrower tool or report the tool name.',
+    }, { status: 500 });
+  }
+}
+
+async function handleTool(request: Request, { params }: { params: Promise<{ name: string }> }) {
   const { name } = await params;
   const { role, museumId } = await sessionFromRequest(request);
 
@@ -205,7 +236,22 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
     return Response.json({ outcome: 'denied', risk: 'LOW', reason: 'Community role required.', recovery: 'Switch to the community collection.' }, { status: 403 });
   }
 
-  const args = await request.json().catch(() => ({})) as Record<string, unknown>;
+  // A body that will not parse is the caller's mistake, and reading it as `{}` turned that
+  // mistake into a plausible-looking success — a search with no query, a list with no
+  // filter (OB-3). An absent body still means no arguments.
+  const raw = (await request.text()).trim();
+  let args: Record<string, unknown> = {};
+  if (raw) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return invalid('body', 'Tool arguments must be a JSON object.', 'Send {} for a call that takes no arguments.');
+      }
+      args = parsed as Record<string, unknown>;
+    } catch {
+      return invalid('body', 'The request body is not valid JSON.', 'Send the arguments as a JSON object, or {} for a call that takes none.');
+    }
+  }
   const objectId = typeof args.object_id === 'string' ? args.object_id : '';
 
   switch (name) {
@@ -386,7 +432,21 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       const selectedEvidence = name === 'compare_evidence'
         ? await getEvidenceByIds(museumId, requestedEvidenceIds, 'agent')
         : [];
-      if (name === 'compare_evidence' && selectedEvidence.length) {
+      // EA-2 — one tool, one contract. This case is shared with `get_review_case`, and
+      // `compare_evidence` used to fall through to the review-case answer whenever none of
+      // its ids resolved to evidence. A caller that passed a contribution id got a review
+      // case back under a different set of keys, with nothing saying which contract had
+      // answered; a caller that passed nothing resolvable was told "No review case with
+      // that id exists" about a parameter named `evidence_ids`. Comparison answers as a
+      // comparison or refuses as one.
+      if (name === 'compare_evidence' && !selectedEvidence.length) {
+        const stated = requestedEvidenceIds.length > 0
+          ? `No evidence record in this workspace matches ${requestedEvidenceIds.join(', ')}.`
+          : 'Comparing sources needs the evidence records to compare.';
+        return invalid('evidence_ids', stated,
+          'Call get_review_case for a contribution id, or compare_evidence with the evidence ids a case lists.');
+      }
+      if (name === 'compare_evidence') {
         const objectIds = [...new Set(selectedEvidence.map((item) => item.objectId))];
         const records = await Promise.all(objectIds.map((id) => objectRecord(museumId, id, 'agent')));
         return Response.json({
@@ -455,6 +515,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       const id = typeof args.submission_id === 'string' ? args.submission_id : '';
       const question = typeof args.question === 'string' ? args.question.trim() : '';
       if (!question) return invalid('question', 'A clarification needs a question.', 'Ask about date, place, source, or consent scope.');
+      // The same ceiling as the console route, for the same reason (OB-1).
+      if (question.length > MAX_CLARIFICATION_CHARS) {
+        return invalid('question', `A clarification is at most ${MAX_CLARIFICATION_CHARS} characters, and this one is ${question.length}.`, 'Ask one focused question; open a second one for the rest.');
+      }
       const row = id ? await getSubmission(museumId, id) : null;
       if (!row) return invalid('submission_id', 'No contribution with that id exists in this workspace.', 'Call list_submissions to list open contributions.');
       // The agent surface stores the question the same way the console does. A question
@@ -478,6 +542,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       if (!record) return invalid(...NO_OBJECT);
       const draft = typeof args.draft === 'string' ? args.draft.trim() : '';
       if (!draft) return invalid('draft', 'A proposal needs the label text it would publish.', 'Call draft_label first, then propose the text it returns.');
+      // The ceiling WEBMCP_TOOLS §3.8 already declared. An approval snapshot is immutable
+      // and hashed, so an unbounded draft is stored and re-read forever (OB-1).
+      if (draft.length > MAX_LABEL_DRAFT_CHARS) {
+        return invalid('draft', `A label is at most ${MAX_LABEL_DRAFT_CHARS} characters, and this draft is ${draft.length}.`, 'Shorten the label, or propose the change in more than one revision.');
+      }
 
       const resolvedRefs = await refsFrom(museumId, args, record.id);
       const citation = citationProblem(resolvedRefs, record.id);
@@ -676,6 +745,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       const proposedId = slugFor(title);
       const existing = proposedId ? await objectRecord(museumId, proposedId, 'curator') : null;
       if (existing) return invalid('title', `A record already exists at ${existing.id}.`, 'Propose a different title, or add evidence to the existing record.');
+      // The accession number is unique per workspace and the registration route refuses a
+      // clash with 409. Checking only the title-derived id let a proposal with a taken
+      // accession sit in the queue until a curator tried to act on it and hit that 409
+      // (EA-3). A refusal an agent can act on now, rather than a dead end for a human later.
+      const accessionClash = await objectWithAccession(museumId, accession);
+      if (accessionClash) {
+        return invalid('accession', `${accession} is already the accession number of ${accessionClash.title} (${accessionClash.id}).`,
+          'Propose the next unused accession number, or add evidence to the existing record.');
+      }
 
       const refs = await refsForNewRecord(museumId, args);
       const policy = evaluatePolicy({ actor: role, action: 'register_object', museumMatch: true, refs });
@@ -703,7 +781,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ nam
       return Response.json({
         ...policy, proposed_object_id: proposedId, created: false,
         ...await escalate(museumId, policy, {
-          tool: 'register_object', objectId: proposedId, args: proposal,
+          tool: 'register_object', objectId: proposedId,
+          // No record exists at this id and this refusal is why. Storing the proposed slug
+          // put an "Open record" link on the curator's overview that led to a 404 (EA-4).
+          escalationObjectId: null,
+          args: proposal,
           sourceRefs: Array.isArray(args.evidence_ids) ? args.evidence_ids.map(String) : [],
           action: 'was denied a new collection record',
           next: 'Cite a verified institutional record, or ask a curator to register it directly.',

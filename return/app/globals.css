@@ -179,6 +179,9 @@ a { color:inherit; text-decoration:none; }
 .choice-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:.7rem; margin-bottom:2rem; }
 .choice-grid button { min-height:100px; background:transparent; border:1px solid var(--line); display:flex; flex-direction:column; justify-content:space-between; align-items:flex-start; padding:1rem; font-weight:600; cursor:pointer; }.choice-grid button span { font-size:1.3rem; color:var(--muted); }.choice-grid button.selected { border-color:var(--ink); box-shadow:inset 0 0 0 1px var(--ink); background:#f0ebe0; }
 .form-stage label { display:flex; flex-direction:column; gap:.55rem; margin:1rem 0; font-size:.68rem; font-weight:650; }
+/* The label text and its required marker are one flex item, so the marker stays on the
+   line it marks rather than dropping to a row of its own (OB-6). */
+.field-name { display:block; }
 .form-stage input,.form-stage textarea { width:100%; border:1px solid #bdbbb3; background:#fffdfa; color:var(--ink); padding:.85rem; font:400 .84rem/1.5 var(--font-geist-sans); border-radius:0; }.form-stage textarea { resize:vertical; }
 .field-pair { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
 .consent-options { border:0; padding:0; margin:0; }.consent-options legend { font-size:.68rem; font-weight:650; margin-bottom:.6rem; }.consent-options label { flex-direction:row; align-items:flex-start; border-top:1px solid var(--line); margin:0; padding:1rem 0; gap:.8rem; cursor:pointer; }.consent-options label:last-child { border-bottom:1px solid var(--line); }.consent-options input { width:16px; margin-top:.2rem; accent-color:var(--moss); }.consent-options span { display:flex; flex-direction:column; gap:.25rem; }.consent-options strong { font-size:.84rem; }.consent-options small { font-weight:400; color:var(--muted); font-size:.7rem; }

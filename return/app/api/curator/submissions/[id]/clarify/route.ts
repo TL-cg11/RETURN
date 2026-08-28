@@ -1,4 +1,5 @@
 import { appendClarification, getSubmission, recordActivity, setSubmissionStatus } from '@/db/queries';
+import { MAX_CLARIFICATION_CHARS } from '@/lib/domain/types';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
 import { sessionFromRequest } from '@/lib/session';
 
@@ -10,6 +11,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const body = await request.json() as { question?: string };
   const question = (body.question ?? '').trim();
   if (!question) return Response.json({ outcome: 'invalid', field: 'question', reason: 'A clarification needs a question.', recovery: 'Ask about date, place, source, or consent scope.' }, { status: 400 });
+  // Refused rather than trimmed, so the contributor reads the question the curator wrote
+  // and the agent reads the same one (OB-1).
+  if (question.length > MAX_CLARIFICATION_CHARS) {
+    return Response.json({ outcome: 'invalid', field: 'question', reason: `A clarification is at most ${MAX_CLARIFICATION_CHARS} characters, and this one is ${question.length}.`, recovery: 'Ask one focused question; open a second one for the rest.' }, { status: 400 });
+  }
 
   const submission = await getSubmission(museumId, id).catch(() => null);
   if (!submission) return Response.json({ error: 'Submission not found' }, { status: 404 });

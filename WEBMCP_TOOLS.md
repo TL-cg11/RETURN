@@ -65,6 +65,17 @@
 
 ### 1.5 정책 바인딩 (전 툴 공통)
 모든 툴은 서버에서 순서대로 통과한다: **schema → role → tenancy → record 존재 → risk → consent/visibility → assertion×authority → justification provenance → (HIGH시) immutable snapshot → activity log.** (TECH_SPEC §D)
+
+**응답 계약.** 모든 답은 `outcome` 을 싣는다. 값은 다섯 가지다 —
+`applied` · `pending_approval` · `denied` · `invalid`, 그리고 **`error`**.
+`error` 는 예기치 않은 실패에만 쓴다(EA-1): 적용되지도, 큐에 들어가지도, 정책에 거부되지도,
+호출자의 실수도 아닌 경우다. 종전에는 이 경우 플랫폼의 **본문 없는 500** 이 그대로 나가서
+에이전트가 읽을 것도 시도할 것도 없었다. `error` 응답은 `reason` 과 `recovery` 를 함께 싣고,
+원래 예외는 서버 로그에 남는다.
+
+**인자 본문.** 파싱되지 않는 본문은 `invalid` + `field:"body"` 로 거부한다(OB-3). 종전에는
+`{}` 로 읽어서, 질의 없는 검색처럼 그럴듯한 성공으로 보였다. 본문이 아예 없으면 인자 없는
+호출로 그대로 처리한다.
 - 제출은 항상 `authority:"submitted"`. community는 `verified` 부여 불가.
 - HIGH↑ **agent** action이 refs 없음 또는 전부 submitted → **denied + escalation** (실행 아님).
 - `sealed`는 어떤 출력에도 포함 금지(존재조차 노출 안 함).
@@ -228,6 +239,10 @@
   "properties":{ "evidence_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{3,64}$"} } }
 ```
 - 개별 evidence 원문을 **consent·visibility에 따라 redaction**하여 반환. `private`은 직접 인용 불가로 표기하되 메타데이터는 노출.
+- **구현 현황 (EA-2).** 배포된 `compare_evidence` 는 `get_review_case` 와 한 핸들러를 공유하되
+  **계약은 하나다.** 인용 id 가 evidence 로 해석되지 않으면 review case 응답으로 넘어가지 않고
+  `invalid` + `field:"evidence_ids"` 로 거부한다. 종전에는 기여 id 를 넘기면 키 구성이 전혀 다른
+  review case 가 돌아왔고, 어느 계약으로 답했는지 알리는 필드도 없었다.
 - **`sealed`는 존재 자체를 숨긴다:** 존재하지 않는 ID와 **완전히 동일한** 응답을 반환해야 한다 — `{status:"invalid", field:"evidence_id", message:"No evidence with that id.", next, retryable:true}`. `policy:"sealed_hidden"` 같은 구별되는 거부를 반환하면 "그 ID에 sealed 자료가 있다"는 사실이 새어나가므로 금지. (sealed 접근 시도는 서버 audit log에만 별도 기록.)
 - 1.5K 응답 예산에서 case 요약(§3.4)과 원문 조회를 분리하는 목적.
 
@@ -333,7 +348,11 @@
   "asset_ids": {"type":"array","items":{"type":"string"}} }
 ```
 
-- 이미 업로드된 자산을 **자기 기여에** 연결한다. 자산은 기여의 `consent` 와 대상 유물을 상속한다.
+- 이미 업로드된 자산을 **이 워크스페이스의 기여에** 연결한다. 자산은 기여의 `consent` 와 대상 유물을 상속한다.
+- **"자기 기여"가 아니다 (EA-5).** 이 문서가 그렇게 적고 있었지만 코드가 검사하는 것은 워크스페이스
+  경계뿐이다. 이 데모에는 개인 신원 모델이 없다 — 세션 하나가 워크스페이스 하나이고, 기여에
+  작성자 식별자가 없다. 강제할 수 없는 것을 강제한다고 적어두는 쪽이 더 나쁘므로 문구를 코드에
+  맞췄다. 소유권을 실제로 걸려면 세션 소유자를 기여에 기록하고 대조해야 하며, 그것은 기능 추가다
 - `visibility` 는 건드리지 않는다. 첨부해도 `restricted` 로 남으며, 공개는 큐레이터의 행위다.
 - 이미 다른 기여에 붙은 id 는 매칭되지 않는다. 그래서 `attached` 가 `requested` 보다 작게 돌아올 수 있고,
   이것이 남의 기여에 파일을 밀어 넣지 못하게 하는 방식이다.
@@ -382,6 +401,9 @@
 표면 양쪽에서 가능하되, **도구는 제안만 하고 기록을 만들지 않는다.**
 
 - 위험 등급 **HIGH**. 새 유물은 공식 기록을 만드는 행위이므로 `publish_label` 과 같은 칸에 선다
+- **accession 중복은 제안 단계에서 거부한다 (EA-3).** `objects` 에 유니크 인덱스가 있고 등록
+  라우트가 409 를 돌려주므로, 이미 쓰이는 번호를 담은 제안은 실패가 확정돼 있다. 종전에는 제목
+  slug 만 검사해서 그 제안이 큐레이터 큐까지 갔고, 사람이 실행하려는 순간에야 막혔다
 - 검증된 근거가 있으면 `pending_approval` + 제안이 큐에 남고, 응답은 `created:false` 를 명시한다
 - submitted 자료만 인용하면 `submitted_sole_authority` 로 거부하고 escalation 을 만든다
 - **아무 증거도 인용하지 않으면 `no_supporting_evidence`** 로 거부한다. 인용이 0건인 호출에

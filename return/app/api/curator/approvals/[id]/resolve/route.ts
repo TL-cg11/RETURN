@@ -71,7 +71,7 @@ function linkedSubmissionUpdate(
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { role, museumId } = await sessionFromRequest(request);
-  if (role !== 'curator') return Response.json({ error: 'Curator role required' }, { status: 403 });
+  if (role !== 'curator') return Response.json({ outcome: 'denied', risk: 'LOW', reason: 'Curator role required.', recovery: 'Switch to the curator workspace.' }, { status: 403 });
 
   const { id } = await params;
   const body = await request.json().catch(() => ({})) as { action?: string; draft?: unknown; editReason?: unknown };
@@ -80,7 +80,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
 
   const approval = await getApproval(museumId, id).catch(() => null);
-  if (!approval) return Response.json({ error: 'Approval not found' }, { status: 404 });
+  if (!approval) return Response.json({ outcome: 'invalid', field: 'approval_id', reason: 'No approval with that id exists in this workspace.', recovery: 'Call list_pending_approvals to see what is waiting.' }, { status: 404 });
   if (approval.status !== 'pending') return unavailable(approval.status);
 
   let rawSnapshot: unknown;

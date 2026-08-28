@@ -70,7 +70,11 @@ export default async function CuratorDashboard() {
               <span className="policy-code">{item.policy.replaceAll('_', ' ')}</span>
               <time>{relativeTime(item.created_at)}</time>
               <div className="escalation-close">
-                {item.object_id && <Link className="escalation-open" href={`/objects/${item.object_id}`}>Open record →</Link>}
+                {/* Only a record that exists. An escalation may name an object that was
+                    proposed and never created, and a link to it is a link to a 404 (EA-4). */}
+                {item.object_id && collection.some((object) => object.id === item.object_id) && (
+                  <Link className="escalation-open" href={`/objects/${item.object_id}`}>Open record →</Link>
+                )}
                 <EscalationActions escalationId={item.id} />
               </div>
             </article>

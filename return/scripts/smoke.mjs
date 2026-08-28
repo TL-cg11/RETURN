@@ -203,8 +203,11 @@ async function main() {
   check('list_objects returns 8', objects.json?.count === 8, `count ${objects.json?.count}`);
   const reviewCase = await tool('get_review_case', { case_id: submissionId });
   check('get_review_case resolves the case', reviewCase.status === 200 && reviewCase.json.case_id === submissionId);
-  const compare = await tool('compare_evidence', { evidence_ids: [submissionId] });
+  // This used to pass a contribution id and assert on the review-case answer that came
+  // back, which is the confusion EA-2 removed. Comparison is asked for with evidence ids.
+  const compare = await tool('compare_evidence', { evidence_ids: ['EV-068', 'EV-059'] });
   check('compare_evidence separates conflicts and questions', compare.status === 200 && Array.isArray(compare.json.conflicts) && Array.isArray(compare.json.open_questions));
+  check('compare_evidence answers with evidence, not a review case', Array.isArray(compare.json.evidence) && compare.json.case_id === undefined);
   const visibility = await tool('compare_evidence', { evidence_ids: ['EV-INJ-DEALER', 'EV-INJ-SEALED'] });
   check('restricted evidence body is withheld from agent output', visibility.status === 200 && visibility.json.evidence?.[0]?.body === null);
   check('sealed evidence is omitted from agent output', visibility.json?.omitted_evidence_ids?.includes('EV-INJ-SEALED') && !visibility.text.includes('SYSTEM_OVERRIDE'));
@@ -796,6 +799,81 @@ async function main() {
   await setRole('curator');
   const afterWrite = await tool('list_submissions', { limit: 100 });
   check('one contribution call leaves exactly one contribution', (afterWrite.json?.count ?? 0) - beforeWrite === 1, `${beforeWrite} → ${afterWrite.json?.count}`);
+  await setRole('community');
+  /* ---------- 13. the browser sweep findings (FIX_REQUEST_3.md) ---------- */
+  section('browser sweep');
+  await post('/api/reset');
+
+  /* EA-1 — a long query is a search, not a 500. */
+  await setRole('community');
+  for (const length of [48, 49, 200, 2000]) {
+    const long = await tool('search_collection', { query: 'a'.repeat(length) });
+    check(`a ${length}-character query is answered, not thrown`, long.status === 200 && long.json?.count === 0, `status ${long.status}`);
+  }
+  const stillSearches = await tool('search_collection', { query: 'basalt' });
+  check('search still matches on a field other than the title', stillSearches.json?.objects?.[0]?.id === 'tide-listening-stone', JSON.stringify(stillSearches.json?.objects));
+  const emptySearch = await tool('search_collection', {});
+  check('a search with no query still lists the collection', emptySearch.json?.count === OBJECT_IDS.length, `${emptySearch.json?.count}`);
+
+  /* EA-2 — comparison answers as a comparison or refuses as one. */
+  await setRole('curator');
+  const sweepInbox = await tool('list_submissions', { limit: 5 });
+  const anyCase = sweepInbox.json?.submissions?.[0]?.id;
+  const comparison = await tool('compare_evidence', { evidence_ids: ['EV-068', 'EV-059'] });
+  check('compare_evidence returns a comparison', Array.isArray(comparison.json?.evidence) && !comparison.json?.case_id);
+  const asCase = await tool('compare_evidence', { evidence_ids: [anyCase] });
+  check('compare_evidence does not answer as a review case', asCase.json?.outcome === 'invalid' && asCase.json?.field === 'evidence_ids', JSON.stringify(asCase.json).slice(0, 120));
+  check('the refusal talks about evidence, not review cases', !/review case/i.test(asCase.json?.reason ?? ''), asCase.json?.reason);
+  const noIds = await tool('compare_evidence', {});
+  check('compare_evidence with no ids refuses on its own parameter', noIds.json?.field === 'evidence_ids');
+  const stillACase = await tool('get_review_case', { case_id: anyCase });
+  check('get_review_case still answers as a review case', stillACase.json?.case_id === anyCase);
+
+  /* EA-3 — an accession that is taken is refused where it is proposed. */
+  const takenAccession = await tool('register_object', { title: `Accession Probe ${stamp}`, accession: 'RT.1930.014', basis: 'A verified accession file names it.', evidence_ids: ['EV-068'] });
+  check('a proposal reusing an accession is refused', takenAccession.json?.outcome === 'invalid' && takenAccession.json?.field === 'accession', JSON.stringify(takenAccession.json).slice(0, 140));
+  check('the refusal names the record already using it', /moonbird-mask/.test(takenAccession.json?.reason ?? ''), takenAccession.json?.reason);
+
+  /* EA-4 — a refusal does not name a record that was never created. */
+  const refusedRegistration = await tool('register_object', { title: `Unbacked Probe ${stamp}`, accession: `RT.1972.E4${stamp}`, basis: 'No citation.' });
+  check('a registration citing nothing is refused', refusedRegistration.json?.policy === 'no_supporting_evidence');
+  const overview = await get('/curator');
+  check('the console links to no record that does not exist', !overview.text.includes(`/objects/unbacked-probe-${stamp}`.toLowerCase()), 'a proposed slug reached an Open record link');
+
+  /* OB-1 — what is stored is what is read back. */
+  const longQuestion = await tool('request_clarification', { submission_id: anyCase, question: 'Q'.repeat(401) });
+  check('a clarification longer than the read limit is refused', longQuestion.json?.outcome === 'invalid' && longQuestion.json?.field === 'question', JSON.stringify(longQuestion.json).slice(0, 120));
+  const okQuestion = await tool('request_clarification', { submission_id: anyCase, question: 'Q'.repeat(400) });
+  check('a clarification at the limit is accepted', okQuestion.json?.outcome === 'applied');
+  await setRole('community');
+  const readBack = await tool('check_submission', { submission_id: anyCase });
+  check('the stored question and the one read back are the same length', readBack.json?.curator_question?.length === 400, `${readBack.json?.curator_question?.length}`);
+  await setRole('curator');
+  const longDraft = await tool('propose_label_update', { object_id: 'moonbird-mask', draft: 'D'.repeat(6001), evidence_ids: ['EV-068'] });
+  check('a label past the declared ceiling is refused', longDraft.json?.outcome === 'invalid' && longDraft.json?.field === 'draft');
+
+  /* OB-2 — an undefined role is refused rather than rewritten. */
+  const rogueRole = await post('/api/session', { role: 'admin' });
+  check('an undefined role is refused', rogueRole.status === 400 && rogueRole.json?.field === 'role', `status ${rogueRole.status}`);
+  const stillCurator = await get('/api/session');
+  check('a refused role change leaves the session alone', stillCurator.json?.role === 'curator', JSON.stringify(stillCurator.json));
+
+  /* OB-3 — an unparseable body is the caller's mistake, not an empty call. */
+  const brokenBody = await req('/api/tools/list_objects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{oops' });
+  check('a malformed body is refused rather than read as {}', brokenBody.status === 400 && brokenBody.json?.field === 'body', `status ${brokenBody.status}`);
+  const arrayBody = await req('/api/tools/list_objects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '[1,2]' });
+  check('a JSON array is refused as arguments', arrayBody.json?.field === 'body');
+  const noBody = await req('/api/tools/list_objects', { method: 'POST' });
+  check('an absent body still means no arguments', noBody.status === 200 && noBody.json?.count === OBJECT_IDS.length, `status ${noBody.status}`);
+
+  /* OB-4 — the console routes answer in the same four fields as the tools. */
+  const fourFields = (body) => body?.outcome !== undefined && body?.reason !== undefined && body?.recovery !== undefined && body?.error === undefined;
+  const noApproval = await post('/api/curator/approvals/APR-NOT-REAL/resolve', { action: 'approved', draft: 'x' });
+  check('an unknown approval answers in the tool contract', noApproval.status === 404 && fourFields(noApproval.json), JSON.stringify(noApproval.json).slice(0, 110));
+  const noEscalation = await post('/api/curator/escalations/ESC-NOT-REAL/resolve', { action: 'dismissed' });
+  check('an unknown referral answers in the tool contract', noEscalation.status === 404 && fourFields(noEscalation.json), JSON.stringify(noEscalation.json).slice(0, 110));
+  const noAsset = await req('/api/curator/assets/AST-NOT-REAL/publish', { method: 'POST' });
+  check('an unknown asset answers in the tool contract', noAsset.status === 404 && fourFields(noAsset.json), JSON.stringify(noAsset.json).slice(0, 110));
   await setRole('community');
   /* ---------- report ---------- */
   const failed = results.filter((r) => !r.ok);

@@ -16,6 +16,19 @@ export const isConsent = (value: unknown): value is Consent => typeof value === 
  * unrecognised consent level is that it withholds (MCP-E2).
  */
 export const isQuotable = (value: unknown): boolean => value === 'public_anonymous' || value === 'public_attributed';
+
+/**
+ * Input ceilings for the two free-text fields that reach a person (OB-1).
+ *
+ * `check_submission` returns a curator's question to the contributing agent and used to
+ * cut it at 400 characters, so a longer question was stored in full and read back
+ * truncated: two versions of the same sentence, and nothing said which one the
+ * contributor was answering. The store now refuses what the read cannot carry.
+ *
+ * The label ceiling is the one WEBMCP_TOOLS §3.8 already declared for a label body.
+ */
+export const MAX_CLARIFICATION_CHARS = 400;
+export const MAX_LABEL_DRAFT_CHARS = 6000;
 export type Visibility = 'public' | 'restricted' | 'sealed';
 export type AssertionMode = 'verified_fact' | 'attributed_claim' | 'open_question';
 
