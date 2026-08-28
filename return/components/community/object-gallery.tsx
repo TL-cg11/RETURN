@@ -42,24 +42,45 @@ const LENS_STEP = 0.06;
 export function ObjectGallery({ images, children }: { images: GalleryImage[]; children?: React.ReactNode }) {
   const [index, setIndex] = useState(0);
   const [zooming, setZooming] = useState(false);
-  const [lens, setLens] = useState<{ x: number; y: number } | null>(null);
-  // The drawn lens places a scaled copy in pixels, so it needs the frame's real size.
-  // The photographic lens works in percentages and never reads this.
-  const [frameBox, setFrameBox] = useState<{ w: number; h: number } | null>(null);
+  // Where the lens is sampling, as a fraction of the *painted picture* — not of the
+  // frame. `object-fit: contain` leaves margins, and treating a point in that margin as
+  // a point in the picture magnified a part of the image nobody was pointing at.
+  const [lens, setLens] = useState<{ u: number; v: number } | null>(null);
+  // The frame's size, and the rectangle the picture actually occupies inside it.
+  const [paint, setPaint] = useState<{ fw: number; fh: number; ox: number; oy: number; w: number; h: number } | null>(null);
   // Which input last placed the lens. The pointer and the keyboard want opposite
   // things when the pointer leaves the frame, and only this tells them apart.
   const drivenBy = useRef<'pointer' | 'keyboard'>('pointer');
   const frame = useRef<HTMLDivElement>(null);
+  const picture = useRef<HTMLImageElement>(null);
 
   const hasPhotos = images.length > 0;
   const current = hasPhotos ? images[Math.min(index, images.length - 1)] : null;
-  const step = (by: number) => { setIndex((now) => (now + by + images.length) % images.length); setLens(null); };
+  const step = (by: number) => { setIndex((now) => (now + by + images.length) % images.length); setLens(null); setPaint(null); };
   const clamp = (value: number) => Math.min(1, Math.max(0, value));
 
+  /**
+   * The frame, and the rectangle the picture occupies inside it.
+   *
+   * The `<img>` element fills the frame, but `contain` (and `scale-down`, which also
+   * refuses to enlarge a small original) paints it letterboxed inside that element. The
+   * lens has to work in the painted rectangle's coordinates or it samples the wrong
+   * place — and over the margin there is nothing to sample at all.
+   */
   function measure() {
     const box = frame.current?.getBoundingClientRect();
-    if (box) setFrameBox({ w: box.width, h: box.height });
-    return box;
+    if (!box) return null;
+    const image = picture.current;
+    let next = { fw: box.width, fh: box.height, ox: 0, oy: 0, w: box.width, h: box.height };
+    if (image?.naturalWidth && image.naturalHeight) {
+      const fit = Math.min(box.width / image.naturalWidth, box.height / image.naturalHeight);
+      const scale = image.classList.contains('natural-size') ? Math.min(fit, 1) : fit;
+      const w = image.naturalWidth * scale;
+      const h = image.naturalHeight * scale;
+      next = { fw: box.width, fh: box.height, ox: (box.width - w) / 2, oy: (box.height - h) / 2, w, h };
+    }
+    setPaint(next);
+    return { box, paint: next };
   }
 
   function toggleZoom() {
@@ -67,8 +88,8 @@ export function ObjectGallery({ images, children }: { images: GalleryImage[]; ch
     setZooming(true);
     drivenBy.current = 'keyboard';
     measure();
-    // Start at the centre so the lens exists before the pointer or the arrow keys move it.
-    setLens({ x: 0.5, y: 0.5 });
+    // Start at the middle of the picture so the lens exists before anything moves it.
+    setLens({ u: 0.5, v: 0.5 });
     frame.current?.focus();
   }
 
@@ -86,18 +107,22 @@ export function ObjectGallery({ images, children }: { images: GalleryImage[]; ch
     // Re-measured here so a resize between key presses cannot leave a keyboard user's
     // lens sampling the wrong part of the frame.
     measure();
-    setLens((now) => ({ x: clamp((now?.x ?? 0.5) + move[0]), y: clamp((now?.y ?? 0.5) + move[1]) }));
+    // Clamped to the picture, so the arrow keys can never walk the lens into the margin.
+    setLens((now) => ({ u: clamp((now?.u ?? 0.5) + move[0]), v: clamp((now?.v ?? 0.5) + move[1]) }));
   }
 
   function track(event: MouseEvent<HTMLDivElement>) {
     if (!zooming) return;
     drivenBy.current = 'pointer';
-    const box = measure();
-    if (!box) return;
-    setLens({
-      x: clamp((event.clientX - box.left) / box.width),
-      y: clamp((event.clientY - box.top) / box.height),
-    });
+    const measured = measure();
+    if (!measured) return;
+    const { box, paint: rect } = measured;
+    const u = (event.clientX - box.left - rect.ox) / rect.w;
+    const v = (event.clientY - box.top - rect.oy) / rect.h;
+    // Outside the picture there is nothing to magnify, so the lens goes away rather
+    // than hovering over blank margin showing some unrelated part of the image.
+    if (u < 0 || u > 1 || v < 0 || v > 1) { setLens(null); return; }
+    setLens({ u, v });
   }
 
   /**
@@ -129,34 +154,36 @@ export function ObjectGallery({ images, children }: { images: GalleryImage[]; ch
       >
         {current ? (
           /* eslint-disable-next-line @next/next/no-img-element -- served from R2 through /api/assets, not a static import */
-          <img src={current.url} alt={current.alt} width={current.width ?? undefined} height={current.height ?? undefined}
+          <img ref={picture} src={current.url} alt={current.alt} onLoad={measure}
+            width={current.width ?? undefined} height={current.height ?? undefined}
             className={current.width && current.height ? 'natural-size' : undefined} />
         ) : (
           <div className="gallery-drawn">{children}</div>
         )}
 
-        {zooming && lens && (current ? (
+        {zooming && lens && paint && (current ? (
           <span
             className="gallery-lens"
             aria-hidden="true"
             style={{
-              left: `${lens.x * 100}%`,
-              top: `${lens.y * 100}%`,
+              // Placed over the point in the frame, sampled from the point in the picture.
+              left: `${((paint.ox + lens.u * paint.w) / paint.fw) * 100}%`,
+              top: `${((paint.oy + lens.v * paint.h) / paint.fh) * 100}%`,
               backgroundImage: `url(${current.url})`,
-              backgroundPosition: `${lens.x * 100}% ${lens.y * 100}%`,
+              backgroundPosition: `${lens.u * 100}% ${lens.v * 100}%`,
             }}
           />
-        ) : frameBox && (
-          <span className="gallery-lens holds-drawing" aria-hidden="true" style={{ left: `${lens.x * 100}%`, top: `${lens.y * 100}%` }}>
+        ) : (
+          <span className="gallery-lens holds-drawing" aria-hidden="true" style={{ left: `${lens.u * 100}%`, top: `${lens.v * 100}%` }}>
             {/* The copy's own origin sits at the lens centre, so translating it by the
                 scaled pointer offset puts the point under the pointer exactly in the
                 middle. The lens's pixel size never enters the arithmetic. */}
             <span
               className="lens-copy"
               style={{
-                width: `${frameBox.w}px`,
-                height: `${frameBox.h}px`,
-                transform: `translate(${-LENS_ZOOM * lens.x * frameBox.w}px, ${-LENS_ZOOM * lens.y * frameBox.h}px) scale(${LENS_ZOOM})`,
+                width: `${paint.fw}px`,
+                height: `${paint.fh}px`,
+                transform: `translate(${-LENS_ZOOM * lens.u * paint.fw}px, ${-LENS_ZOOM * lens.v * paint.fh}px) scale(${LENS_ZOOM})`,
               }}
             >
               <div className="gallery-drawn">{children}</div>
@@ -190,7 +217,7 @@ export function ObjectGallery({ images, children }: { images: GalleryImage[]; ch
                   aria-selected={position === index}
                   aria-label={`Photograph ${position + 1} of ${images.length}`}
                   className={position === index ? 'active' : ''}
-                  onClick={() => { setIndex(position); setLens(null); }}
+                  onClick={() => { setIndex(position); setLens(null); setPaint(null); }}
                 />
               ))}
             </div>

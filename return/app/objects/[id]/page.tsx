@@ -2,6 +2,7 @@ import { NavLink as Link } from '@/components/shared/nav-link';
 import { notFound } from 'next/navigation';
 import { LabelFlip } from '@/components/community/label-flip';
 import { LabelRevisionDiff } from '@/components/community/label-revision-diff';
+import { ContributedMedia, type ContributedFile } from '@/components/community/contributed-media';
 import { ObjectGallery, type GalleryImage } from '@/components/community/object-gallery';
 import { CommunityHeader } from '@/components/shared/community-header';
 import { listLabelPublications, listObjectAssets, listPublicContributions } from '@/db/queries';
@@ -92,6 +93,15 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
   const publicFileRows = assetRows
     .filter((row) => row.kind !== 'image')
     .filter((row) => assetAccess({ museumId: row.museum_id, visibility: row.visibility as Visibility, consent: row.consent as Consent }, { role: 'community', museumId }) === 'serve');
+  const fileOf = (row: (typeof publicFileRows)[number]): ContributedFile => ({
+    id: row.id, url: `/api/assets/${row.id}`, name: row.file_name, kind: row.kind,
+    kilobytes: Math.max(1, Math.round(row.byte_size / 1024)), caption: row.caption,
+  });
+  // Files that belong to no contribution shown below — the museum's own material, and
+  // anything attached to a contribution past the display bound. Without this they would
+  // be published and yet unreachable.
+  const shownIds = new Set(contributions.map((row) => row.id));
+  const looseFiles = publicFileRows.filter((row) => !row.submission_id || !shownIds.has(row.submission_id)).map(fileOf);
   const currentPublication = publications[0];
   const previousPublication = publications[1];
 
@@ -114,6 +124,20 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
           <p className="image-disclaimer">{images.length > 0
             ? `${images.length} public image${images.length === 1 ? '' : 's'} on this record · source and date shown with each image`
             : 'Fictional collection image · created for this demonstration'}</p>
+          {looseFiles.length > 0 && (
+            <ul className="contributed-files record-own">
+              {looseFiles.map((file) => (
+                <li key={file.id}>
+                  <span className="file-mark" aria-hidden="true">{file.kind === 'audio' ? '◉' : '≡'}</span>
+                  <div>
+                    <a href={`${file.url}?download=1`} download>{file.caption || file.name}</a>
+                    <small><span className="file-kind">{file.kind}</span> · {file.kilobytes} KB · on the museum record</small>
+                  </div>
+                  <span className="file-get" aria-hidden="true">↓</span>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
 
         <div className="object-intro">
@@ -158,32 +182,6 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
         </div>
       </section>
 
-      {/* FR2-D1 — files that are not photographs. They are published material like any
-          other, so they belong on the record rather than only in the curator's case. */}
-      {publicFileRows.length > 0 && (
-        <section className="record-files">
-          <div className="section-heading compact">
-            <div>
-              <p className="eyebrow">Documents and recordings</p>
-              <h2>{publicFileRows.length} file{publicFileRows.length === 1 ? '' : 's'} on this record.</h2>
-            </div>
-            <p className="context-note">Files a curator has published. Material still under review is not listed here.</p>
-          </div>
-          <ul className="file-list">
-            {publicFileRows.map((row) => (
-              <li key={row.id}>
-                <span className="file-mark" aria-hidden="true">{row.kind === 'audio' ? '◉' : '≡'}</span>
-                <div>
-                  <a href={`/api/assets/${row.id}?download=1`} download>{row.caption || row.file_name}</a>
-                  <small>{row.kind} · {Math.max(1, Math.round(row.byte_size / 1024))} KB · {row.submission_id ? 'Community contribution' : 'Museum collection file'}</small>
-                </div>
-                <span className="file-get" aria-hidden="true">↓</span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
       {/* FR-O2 — what the community added, marked as such and never merged into the
           institutional record above. Only consent-permitting material reaches this list,
           and only `public_attributed` carries a name. */}
@@ -205,6 +203,9 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
             {contributions.map((row) => {
               const details = parseDetails(row.details);
               const attachedImages = publicImageRows.filter((image) => image.submission_id === row.id);
+              // FR2-D1 — what one person sent stays together. Files used to be listed in a
+              // section of their own, which split a contribution from half of its evidence.
+              const attachedFiles = publicFileRows.filter((file) => file.submission_id === row.id).map(fileOf);
               return (
                 <li key={row.id}>
                   <div className="contributed-head">
@@ -212,24 +213,17 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
                     <strong>{row.title}</strong>
                     <small>{row.kind} · {row.consent === 'public_attributed' && row.source ? row.source : 'Contributor chose not to be named'}</small>
                   </div>
-                  {attachedImages.length > 0 && (
-                    <div className="contributed-media">
-                      {attachedImages.map((image, index) => (
-                        <figure key={image.id}>
-                          <div className="contributed-image-frame">
-                            {/* eslint-disable-next-line @next/next/no-img-element -- protected asset route, not a static import */}
-                            <img src={`/api/assets/${image.id}`} alt={image.alt_text || `${row.title}, photograph ${index + 1}`}
-                              width={image.width ?? undefined} height={image.height ?? undefined}
-                              className={image.width && image.height ? 'natural-size' : undefined} />
-                          </div>
-                          <figcaption>
-                            <span>Community contribution · {formatReviewDate(image.created_at) ?? 'Date not recorded'}</span>
-                            {image.caption || image.alt_text || 'Contributed photograph'}
-                          </figcaption>
-                        </figure>
-                      ))}
-                    </div>
-                  )}
+                  <ContributedMedia
+                    title={row.title}
+                    images={attachedImages.map((image, index) => ({
+                      id: image.id, url: `/api/assets/${image.id}`,
+                      alt: image.alt_text || `${row.title}, photograph ${index + 1}`,
+                      caption: image.caption,
+                      addedLabel: formatReviewDate(image.created_at) ?? 'Date not recorded',
+                      width: image.width, height: image.height,
+                    }))}
+                    files={attachedFiles}
+                  />
                   {details.length > 0 ? (
                     <div className="contributed-detail">
                       {details.map((detail) => (

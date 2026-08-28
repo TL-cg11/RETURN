@@ -371,7 +371,7 @@ a { color:inherit; text-decoration:none; }
 .gallery-arrow.prev { left:.7rem; } .gallery-arrow.next { right:.7rem; }
 .gallery-foot { display:grid; grid-template-columns:1fr auto; gap:1rem; align-items:start; padding:.8rem 0 0; }
 .gallery-caption p { margin:0; color:var(--muted); font-size:.72rem; line-height:1.5; }
-.gallery-caption .gallery-origin { display:flex; gap:.55rem; margin-bottom:.35rem; font-size:.55rem; text-transform:uppercase; letter-spacing:.06em; }
+.gallery-caption .gallery-origin,.lightbox-foot .gallery-origin { display:flex; gap:.55rem; margin-bottom:.35rem; font-size:.55rem; text-transform:uppercase; letter-spacing:.06em; }
 .gallery-origin span { color:#315f83; font-weight:700; }
 .gallery-origin time { color:var(--muted); }
 .gallery-dots { display:flex; gap:.4rem; margin-top:.6rem; }
@@ -397,7 +397,9 @@ a { color:inherit; text-decoration:none; }
 .contributed-status { margin:.9rem 0 0; color:var(--muted); font-size:.62rem; text-transform:capitalize; }
 .contributed-media { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,280px)); gap:.9rem; margin-top:1rem; }
 .contributed-media figure { margin:0; }
-.contributed-image-frame { position:relative; aspect-ratio:4/3; display:grid; place-items:center; overflow:hidden; background:#e6e2d7; }
+.contributed-image-frame { position:relative; aspect-ratio:4/3; display:grid; place-items:center; overflow:hidden; background:#e6e2d7; width:100%; padding:0; border:0; cursor:zoom-in; }
+.contributed-image-frame:hover img,.contributed-image-frame:focus-visible img { opacity:.88; }
+.contributed-image-hint { position:absolute; right:.4rem; bottom:.4rem; width:26px; height:26px; display:grid; place-items:center; background:rgba(24,22,20,.72); color:#f4f1ea; font-size:.8rem; }
 .contributed-image-frame img { width:100%; height:100%; object-fit:contain; }
 .contributed-media figcaption { display:flex; flex-direction:column; gap:.25rem; padding-top:.45rem; color:var(--muted); font-size:.65rem; line-height:1.45; }
 .contributed-media figcaption span { color:#315f83; font-size:.52rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; }
@@ -498,21 +500,21 @@ a { color:inherit; text-decoration:none; }
 .approval-queue button.active { background:var(--console); color:#f3f0e8; border-color:var(--console); font-weight:650; }
 .case-actions button:disabled { opacity:.55; cursor:default; }
 
-/* FR2-D1 · FR2-D2 — published documents and recordings, and handing a file over. */
-.record-files { padding:4rem 4.5vw; border-top:1px solid var(--line); }
-.file-list { list-style:none; margin:2rem 0 0; padding:0; display:grid; gap:.6rem; max-width:760px; }
-.file-list > li { display:grid; grid-template-columns:44px 1fr auto; align-items:center; gap:1rem; border:1px solid var(--line); background:var(--paper-light); padding:.8rem 1rem; }
-.file-list .file-mark { width:44px; height:44px; display:grid; place-items:center; background:#e0ded7; font-size:1.1rem; }
-.file-list a { display:block; font:400 1rem Georgia,serif; border-bottom:1px solid var(--line); width:max-content; }
-.file-list a:hover { border-bottom-color:var(--ink); }
-.file-list small { display:block; margin-top:.25rem; color:var(--muted); font-size:.64rem; text-transform:capitalize; }
+/* FR2-D1 · FR2-D2 — a contribution's files, kept in the card that holds its words. */
+.contributed-files { list-style:none; margin:1rem 0 0; padding:0; display:grid; gap:.5rem; }
+.contributed-files > li { display:grid; grid-template-columns:36px 1fr auto; align-items:center; gap:.8rem; border:1px solid var(--line); background:var(--paper-light); padding:.6rem .8rem; }
+.contributed-files .file-mark { width:36px; height:36px; display:grid; place-items:center; background:#e0ded7; font-size:1rem; }
+.contributed-files a { display:block; font:400 .92rem Georgia,serif; border-bottom:1px solid var(--line); width:max-content; }
+.contributed-files a:hover { border-bottom-color:var(--ink); }
+.contributed-files small { display:block; margin-top:.2rem; color:var(--muted); font-size:.62rem; }
+.contributed-files small .file-kind { text-transform:capitalize; }
+.contributed-files.record-own { margin-top:.8rem; max-width:560px; }
 .file-get { color:var(--muted); font-size:1rem; }
 .gallery-download { display:inline-flex; align-items:center; gap:.35rem; border:1px solid var(--line); padding:.4rem .6rem; font-size:.66rem; white-space:nowrap; }
 .gallery-download:hover { border-color:var(--ink); }
 .gallery-foot { grid-template-columns:1fr auto auto; gap:.5rem; }
 @media (max-width:900px) {
-  .record-files { padding:3rem 1.2rem; }
-  .file-list > li { grid-template-columns:34px 1fr auto; }
+  .contributed-files > li { grid-template-columns:30px 1fr auto; }
 }
 
 /* FR2-K1 — the curator's question, where the contributor can read it. */
@@ -534,3 +536,18 @@ a { color:inherit; text-decoration:none; }
 .gallery-frame.holds-drawing .artifact-stage { width:100%; height:100%; min-height:0; }
 .gallery-lens.holds-drawing { overflow:hidden; background:var(--paper-light); background-image:none; }
 .lens-copy { position:absolute; left:50%; top:50%; transform-origin:0 0; pointer-events:none; }
+
+/* A contributed photograph, opened over the record instead of replacing it. Sending a
+   reader to the raw asset route showed the file alone — no caption, no attribution. */
+.lightbox { position:fixed; inset:0; z-index:60; display:grid; place-items:center; padding:3vh 3vw; }
+.lightbox-scrim { position:absolute; inset:0; width:100%; height:100%; border:0; background:rgba(18,17,15,.82); cursor:zoom-out; }
+.lightbox-panel { position:relative; display:flex; flex-direction:column; min-width:min(460px,92vw); max-width:min(1100px,94vw); max-height:94vh; background:var(--paper); border:1px solid var(--line); }
+.lightbox-panel img { display:block; max-width:100%; max-height:calc(94vh - 96px); object-fit:contain; background:#e6e2d7; }
+.lightbox-foot { display:flex; align-items:center; gap:1rem; padding:.7rem 1rem; border-top:1px solid var(--line); }
+.lightbox-foot > div { flex:1; min-width:0; }
+.lightbox-foot p { margin:0; font-size:.72rem; line-height:1.5; }
+.lightbox-close { border:1px solid var(--line); background:transparent; padding:.4rem .7rem; font-size:.66rem; cursor:pointer; }
+.lightbox-close:hover { border-color:var(--ink); }
+@media (max-width:700px) {
+  .lightbox-foot { flex-wrap:wrap; }
+}
