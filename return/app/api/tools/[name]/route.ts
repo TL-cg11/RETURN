@@ -70,7 +70,7 @@ const assetRefOf = (row: AssetRow) => ({
 function publicAsset(row: AssetRow) {
   return {
     id: row.id, kind: row.kind, file_name: row.file_name, media_type: row.content_type,
-    alt_text: row.alt_text, caption: row.caption, byte_size: row.byte_size,
+    alt_text: row.alt_text, caption: row.caption, byte_size: row.byte_size, width: row.width, height: row.height,
     consent: row.consent, visibility: row.visibility, quotable: row.consent !== 'private',
     url: `/api/assets/${row.id}`, created_at: row.created_at,
   };

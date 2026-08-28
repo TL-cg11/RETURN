@@ -84,6 +84,8 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
       caption: row.caption, url: `/api/assets/${row.id}`,
       sourceLabel: row.submission_id ? 'Community contribution' : 'Museum collection image',
       addedLabel: formatReviewDate(row.created_at) ?? 'Date not recorded',
+      width: row.width,
+      height: row.height,
     }));
   const currentPublication = publications[0];
   const previousPublication = publications[1];
@@ -185,7 +187,9 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
                         <figure key={image.id}>
                           <div className="contributed-image-frame">
                             {/* eslint-disable-next-line @next/next/no-img-element -- protected asset route, not a static import */}
-                            <img src={`/api/assets/${image.id}`} alt={image.alt_text || `${row.title}, photograph ${index + 1}`} />
+                            <img src={`/api/assets/${image.id}`} alt={image.alt_text || `${row.title}, photograph ${index + 1}`}
+                              width={image.width ?? undefined} height={image.height ?? undefined}
+                              className={image.width && image.height ? 'natural-size' : undefined} />
                           </div>
                           <figcaption>
                             <span>Community contribution · {formatReviewDate(image.created_at) ?? 'Date not recorded'}</span>

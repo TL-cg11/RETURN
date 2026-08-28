@@ -1,6 +1,8 @@
 import { countSubmissionAssets, insertAsset, recordActivity } from '@/db/queries';
 import { isAllowedUpload, MAX_ASSET_BYTES, MAX_ASSETS_PER_CONTRIBUTION } from '@/lib/assets/access';
 import { putAsset, storageKeyFor } from '@/lib/assets/storage';
+import { readImageDimensions } from '@/lib/assets/image-dimensions';
+import type { ImageDimensions } from '@/lib/assets/image-dimensions';
 import { sessionFromRequest } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
@@ -44,16 +46,19 @@ export async function POST(request: Request) {
   const fileName = (file.name || 'upload').slice(0, 120);
   const storageKey = storageKeyFor(museumId, id, fileName);
   const now = Date.now();
+  let dimensions: ImageDimensions | null = null;
 
   try {
-    await putAsset(storageKey, await file.arrayBuffer(), file.type);
+    const bytes = await file.arrayBuffer();
+    dimensions = allowed.kind === 'image' ? readImageDimensions(bytes, file.type) : null;
+    await putAsset(storageKey, bytes, file.type);
     await insertAsset(museumId, {
       id, object_id: null, submission_id: submissionId || null, evidence_id: null,
       kind: allowed.kind, content_type: file.type, storage_key: storageKey, file_name: fileName,
       alt_text: typeof form?.get('alt_text') === 'string' ? String(form.get('alt_text')).slice(0, 300) : '',
       caption: typeof form?.get('caption') === 'string' ? String(form.get('caption')).slice(0, 300) : '',
       visibility: 'restricted', consent: 'private',
-      byte_size: file.size, width: null, height: null, sort_order: now,
+      byte_size: file.size, width: dimensions?.width ?? null, height: dimensions?.height ?? null, sort_order: now,
       uploaded_by: role === 'curator' ? 'Curator' : 'Community contributor',
       created_at: now, updated_at: now,
     });
@@ -65,5 +70,6 @@ export async function POST(request: Request) {
     tool: 'upload_asset', target: id, risk: 'MEDIUM', policyDecision: 'applied', result: id,
   });
 
-  return Response.json({ outcome: 'applied', id, kind: allowed.kind, file_name: fileName, byte_size: file.size, url: `/api/assets/${id}` });
+  return Response.json({ outcome: 'applied', id, kind: allowed.kind, file_name: fileName, byte_size: file.size,
+    width: dimensions?.width ?? null, height: dimensions?.height ?? null, url: `/api/assets/${id}` });
 }

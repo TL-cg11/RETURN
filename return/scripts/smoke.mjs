@@ -405,6 +405,8 @@ async function main() {
   check('a community contributor can upload an image', uploaded.status === 200 && !!uploaded.json?.id, `status ${uploaded.status}`);
   const assetId = uploaded.json?.id;
   check('an upload reports its kind and size', uploaded.json?.kind === 'image' && uploaded.json?.byte_size > 0);
+  check('an upload records the original pixel dimensions', uploaded.json?.width === 1 && uploaded.json?.height === 1,
+    `${uploaded.json?.width}x${uploaded.json?.height}`);
 
   const scriptable = await upload('image/svg+xml', 'payload.svg');
   check('a script-bearing SVG is refused', scriptable.status === 400, `status ${scriptable.status}`);

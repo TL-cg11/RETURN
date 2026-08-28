@@ -9,6 +9,8 @@ export type GalleryImage = {
   url: string;
   sourceLabel: 'Museum collection image' | 'Community contribution';
   addedLabel: string;
+  width: number | null;
+  height: number | null;
 };
 
 /**
@@ -82,7 +84,8 @@ export function ObjectGallery({ images, children }: { images: GalleryImage[]; ch
         aria-label={zooming ? 'Magnified photograph. Use the arrow keys to move the magnifier, Escape to close it.' : undefined}
       >
         {/* eslint-disable-next-line @next/next/no-img-element -- served from R2 through /api/assets, not a static import */}
-        <img src={current.url} alt={current.alt} />
+        <img src={current.url} alt={current.alt} width={current.width ?? undefined} height={current.height ?? undefined}
+          className={current.width && current.height ? 'natural-size' : undefined} />
         {zooming && lens && (
           <span
             className="gallery-lens"
