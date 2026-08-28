@@ -46,6 +46,28 @@ function unavailable(status: string) {
   }, { status: 409 });
 }
 
+function linkedSubmissionUpdate(
+  db: Awaited<ReturnType<typeof ensureDatabase>>,
+  museumId: string,
+  objectId: string,
+  evidenceIds: string[],
+  status: 'reflected in label' | 'closed',
+  now: number,
+  approvalId: string,
+  approvalStatus: string,
+) {
+  if (evidenceIds.length === 0) return null;
+  const holes = evidenceIds.map(() => '?').join(',');
+  return db.prepare(`UPDATE submissions SET status=?,updated_at=?
+    WHERE museum_id=? AND object_id=? AND status NOT IN ('reflected in label','closed')
+    AND EXISTS (SELECT 1 FROM approvals WHERE museum_id=? AND id=? AND status=? AND resolved_at=?)
+    AND (
+      EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(submissions.evidence_refs) THEN submissions.evidence_refs ELSE '[]' END) ref WHERE ref.value IN (${holes}))
+      OR EXISTS (SELECT 1 FROM activity a WHERE a.museum_id=submissions.museum_id AND a.result=submissions.id AND a.target IN (${holes}))
+    )`)
+    .bind(status, now, museumId, objectId, museumId, approvalId, approvalStatus, now, ...evidenceIds, ...evidenceIds);
+}
+
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { role, museumId } = await sessionFromRequest(request);
   if (role !== 'curator') return Response.json({ error: 'Curator role required' }, { status: 403 });
@@ -84,6 +106,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const snapshotObjectId = currentSnapshot?.target.object_id ?? legacySnapshot!.object_id;
   const snapshotObjectVersion = currentSnapshot?.target.version ?? legacySnapshot!.object_version;
   const snapshotDraft = currentSnapshot?.draft ?? legacySnapshot!.draft;
+  const evidenceIds = currentSnapshot
+    ? currentSnapshot.evidence_refs.map((ref) => ref.id)
+    : Array.isArray(legacySnapshot?.evidence_refs) ? legacySnapshot.evidence_refs.map(String) : [];
   if (snapshotObjectId !== approval.object_id || snapshotObjectVersion !== approval.object_version || snapshotDraft !== approval.snapshot) {
     return mismatch('The approval target, version, or draft no longer matches its immutable snapshot.');
   }
@@ -97,9 +122,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
   if (body.action === 'rejected') {
     const now = Date.now();
+    const linked = linkedSubmissionUpdate(db, museumId, approval.object_id, evidenceIds, 'closed', now, id, 'rejected');
     const [decision] = await db.batch([
       db.prepare("UPDATE approvals SET status='rejected', resolution='rejected', verdict='rejected', edited_body=NULL, edit_reason=?, resolved_at=? WHERE museum_id=? AND id=? AND status='pending' AND expires_at>?")
         .bind(typeof body.editReason === 'string' && body.editReason.trim() ? body.editReason.trim() : null, now, museumId, id, now),
+      ...(linked ? [linked] : []),
       db.prepare(`INSERT INTO activity (id,museum_id,actor,action,detail,created_at,actor_role,actor_type,tool,target,risk,policy_decision,result)
         SELECT ?,?,'Mina, Curator','rejected label revision',?,?,'curator_ui','human',?,?,'HIGH','denied','rejected'
         WHERE EXISTS (SELECT 1 FROM approvals WHERE museum_id=? AND id=? AND status='rejected' AND resolved_at=?)`)
@@ -119,9 +146,6 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return mismatch('The public object version or current label changed after this approval was requested.');
   }
 
-  const evidenceIds = currentSnapshot
-    ? currentSnapshot.evidence_refs.map((ref) => ref.id)
-    : Array.isArray(legacySnapshot?.evidence_refs) ? legacySnapshot.evidence_refs.map(String) : [];
   const evidence = await getEvidenceByIds(museumId, evidenceIds, 'curator');
   const storedAuthorities = parseArray(approval.refs_authority);
   const storedConsents = parseArray(approval.refs_consent);
@@ -189,6 +213,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const assertions = currentSnapshot?.assertions ?? (Array.isArray(legacySnapshot?.assertions) ? legacySnapshot.assertions : []);
   const now = Date.now();
   const previousLabelId = target.current_label_id;
+  const linked = linkedSubmissionUpdate(db, museumId, approval.object_id, evidenceIds, 'reflected in label', now, id, resolution);
 
   const results = await db.batch([
     db.prepare(`INSERT INTO label_publications (id,museum_id,object_id,title,body,assertions,evidence_refs,revision_number,approved_by,published_at,superseded_at)
@@ -209,6 +234,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       WHERE museum_id=? AND id=? AND status='pending' AND expires_at>?
       AND EXISTS (SELECT 1 FROM objects WHERE museum_id=? AND id=? AND version=? AND current_label_id=?)`)
       .bind(resolution, resolution, edited ? draft : null, editReason, now, museumId, id, now, museumId, approval.object_id, revision, publicationId),
+    ...(linked ? [linked] : []),
     db.prepare(`INSERT INTO activity (id,museum_id,actor,action,detail,created_at,actor_role,actor_type,tool,target,risk,policy_decision,result)
       SELECT ?,?,'Mina, Curator',?,?,?,'curator_ui','human',?,?,'HIGH','applied',?
       WHERE EXISTS (SELECT 1 FROM approvals WHERE museum_id=? AND id=? AND status=? AND resolved_at=?)`)

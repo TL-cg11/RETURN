@@ -146,6 +146,33 @@ export async function listLabelPublications(museumId: string, objectId: string) 
   return result.results ?? [];
 }
 
+/** Evidence ids explicitly attached to a contribution, including legacy audit links. */
+export async function listSubmissionEvidenceIds(museumId: string, submissionId: string) {
+  const db = await ensureDatabase(museumId);
+  const submission = await getSubmission(museumId, submissionId);
+  if (!submission) return [];
+  const activity = await db.prepare("SELECT target FROM activity WHERE museum_id=? AND result=? AND target<>''")
+    .bind(museumId, submissionId).all<{ target: string }>();
+  return [...new Set([...parseArray(submission.evidence_refs), ...(activity.results ?? []).map((row) => row.target)])];
+}
+
+/** The exact published revision that cites evidence connected to one contribution. */
+export async function getSubmissionPublicationOutcome(museumId: string, submissionId: string) {
+  const submission = await getSubmission(museumId, submissionId);
+  if (!submission) return null;
+  const [evidenceIds, publications] = await Promise.all([
+    listSubmissionEvidenceIds(museumId, submissionId),
+    listLabelPublications(museumId, submission.object_id),
+  ]);
+  const linked = new Set(evidenceIds);
+  const publication = publications.find((item) => parseArray(item.evidence_refs).some((id) => linked.has(id)));
+  if (!publication) return null;
+  return {
+    publication,
+    previous: publications.find((item) => item.revision_number === publication.revision_number - 1) ?? null,
+  };
+}
+
 export async function listProvenanceEvents(museumId: string, objectId: string, access: EvidenceAccess = 'public') {
   const db = await ensureDatabase(museumId);
   const result = await db.prepare('SELECT id,start_date,end_date,title,detail,status,authority,evidence_refs,is_gap FROM provenance_events WHERE museum_id=? AND object_id=? ORDER BY sort_order')

@@ -4,17 +4,19 @@ export function LabelRevisionDiff({
   before,
   after,
   revision,
+  compact = false,
 }: {
   before: string;
   after: string;
   revision: number;
+  compact?: boolean;
 }) {
   const segments = diffLabelText(before, after);
   const changed = segments.some((segment) => segment.type !== 'equal');
   if (!changed) return null;
 
   return (
-    <section className="public-label-change" aria-labelledby={`label-change-r${revision}`}>
+    <section className={`public-label-change${compact ? ' compact' : ''}`} aria-labelledby={`label-change-r${revision}`}>
       <div>
         <p className="eyebrow">Official label revision</p>
         <h2 id={`label-change-r${revision}`}>What changed in revision {revision}.</h2>

@@ -52,9 +52,9 @@ const evidence: SeedEvidence[] = [
 ];
 
 const submissions = [
-  { id: 'SUB-1042', objectId: 'moonbird-mask', kind: 'Photograph', title: '1959 Aru village photograph', description: 'The reverse reads “Moonbird dancers, first rains, 1959.”', source: 'Ena Varo', consent: 'public_attributed', requested: 'Correct the public label', status: 'received', age: 18 * MINUTE },
-  { id: 'SUB-1041', objectId: 'moonbird-mask', kind: 'Oral history', title: 'Oral history recording', description: 'Ceremonial context described; speaker attribution needs confirmation.', source: 'Community archive', consent: 'private', requested: 'Add cultural context', status: 'needs information', age: 26 * HOUR },
-  { id: 'SUB-1039', objectId: 'woven-signal-cloth', kind: 'Document', title: 'Harbor registry excerpt', description: 'Registry entry places a related cloth at North Channel in 1948.', source: 'S. Leto', consent: 'public_anonymous', requested: 'Investigate provenance', status: 'under review', age: 50 * HOUR },
+  { id: 'SUB-1042', objectId: 'moonbird-mask', kind: 'Photograph', title: '1959 Aru village photograph', description: 'The reverse reads “Moonbird dancers, first rains, 1959.”', source: 'Ena Varo', consent: 'public_attributed', requested: 'Correct the public label', evidenceRefs: ['EV-059'], status: 'received', age: 18 * MINUTE },
+  { id: 'SUB-1041', objectId: 'moonbird-mask', kind: 'Oral history', title: 'Oral history recording', description: 'Ceremonial context described; speaker attribution needs confirmation.', source: 'Community archive', consent: 'private', requested: 'Add cultural context', evidenceRefs: ['EV-OH-059'], status: 'needs information', age: 26 * HOUR },
+  { id: 'SUB-1039', objectId: 'woven-signal-cloth', kind: 'Document', title: 'Harbor registry excerpt', description: 'Registry entry places a related cloth at North Channel in 1948.', source: 'S. Leto', consent: 'public_anonymous', requested: 'Investigate provenance', evidenceRefs: [], status: 'under review', age: 50 * HOUR },
 ];
 
 const activities = [
@@ -103,7 +103,12 @@ export function buildSeedDataset(museumId: string, now = Date.now()) {
     evidence: evidence.map((item) => ({ ...item, verifiedAt: item.verifiedBy ? now - 31 * 24 * HOUR : null, createdAt: now - 45 * 24 * HOUR, updatedAt: now - 2 * HOUR })),
     publications, timeline,
     submissions: submissions.map((item) => ({ ...item, id: `${item.id}-${museumId}`, createdAt: now - item.age })),
-    activities: activities.map((item, index) => ({ ...item, id: `${museumId}-seed-${index}`, createdAt: now - item.age })),
+    activities: activities.map((item, index) => ({
+      ...item,
+      result: item.result.startsWith('SUB-') ? `${item.result}-${museumId}` : item.result,
+      id: `${museumId}-seed-${index}`,
+      createdAt: now - item.age,
+    })),
     approval: { id: `APR-004-${museumId}`, objectId: 'moonbird-mask', createdAt: now - 3 * MINUTE },
   };
 }

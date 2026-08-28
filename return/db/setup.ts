@@ -141,7 +141,7 @@ export async function seedWorkspace(d1: D1Database, museumId: string) {
   }
   for (const submission of seed.submissions) {
     statements.push(d1.prepare('INSERT OR IGNORE INTO submissions (id,museum_id,object_id,kind,title,description,source,consent,requested_outcome,contributor_name,contributor_role,evidence_refs,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-      .bind(submission.id, museumId, submission.objectId, submission.kind, submission.title, submission.description, submission.source, submission.consent, submission.requested, submission.source, 'community', '[]', submission.status, submission.createdAt, submission.createdAt));
+      .bind(submission.id, museumId, submission.objectId, submission.kind, submission.title, submission.description, submission.source, submission.consent, submission.requested, submission.source, 'community', JSON.stringify(submission.evidenceRefs), submission.status, submission.createdAt, submission.createdAt));
   }
   for (const entry of seed.activities) {
     statements.push(d1.prepare('INSERT OR IGNORE INTO activity (id,museum_id,actor,action,detail,created_at,actor_role,actor_type,tool,target,risk,policy_decision,result) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')

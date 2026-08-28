@@ -1,7 +1,8 @@
 import { NavLink as Link } from '@/components/shared/nav-link';
 import { notFound } from 'next/navigation';
-import { getSubmission, listSubmissionAssets } from '@/db/queries';
+import { getSubmission, getSubmissionPublicationOutcome, listSubmissionAssets } from '@/db/queries';
 import { CommunityHeader } from '@/components/shared/community-header';
+import { LabelRevisionDiff } from '@/components/community/label-revision-diff';
 import { CONTRIBUTION_KINDS, fieldsFor, summariseDetail, type ContributionKind, type KindDetail } from '@/lib/community/contribution';
 import { findObject } from '@/lib/records';
 import { relativeTime, sessionFromCookies } from '@/lib/session';
@@ -51,9 +52,10 @@ export default async function SubmissionStatus({ params }: { params: Promise<{ i
   const submission = await getSubmission(museumId, id);
   if (!submission) notFound();
 
-  const [object, assets] = await Promise.all([
+  const [object, assets, publicationOutcome] = await Promise.all([
     findObject(museumId, submission.object_id),
     listSubmissionAssets(museumId, submission.id),
+    getSubmissionPublicationOutcome(museumId, submission.id),
   ]);
   const current = stageIndex(submission.status);
   const details = parseDetails(submission.details);
@@ -65,15 +67,21 @@ export default async function SubmissionStatus({ params }: { params: Promise<{ i
   // the current sentences and their standing rather than claiming authorship.
   const revisedSince = !!object?.labelPublishedAt && object.labelPublishedAt > submission.created_at;
   const reflected = submission.status === 'reflected in label';
+  const closed = submission.status === 'closed';
+  const reflectedPublication = reflected ? publicationOutcome?.publication : null;
 
   return (
     <main>
       <CommunityHeader />
       <section className="status-page">
-        <p className="eyebrow">Contribution received</p>
+        <p className="eyebrow">{reflected || closed ? 'Review outcome' : 'Contribution received'}</p>
         <div className="status-check">✓</div>
-        <h1>Thank you for adding to the record.</h1>
-        <p>Your {submission.kind.toLowerCase()} {details.length > 1 ? 'are' : 'is'} now visible to the curatorial team. The public label has not changed by itself.</p>
+        <h1>{reflected ? 'Your contribution informed the public record.' : closed ? 'The review is closed.' : 'Thank you for adding to the record.'}</h1>
+        <p>{reflected
+          ? `A curator linked this contribution to official label revision ${reflectedPublication?.revision_number ?? object?.labelRevision ?? '—'}.`
+          : closed
+            ? 'This review ended without a published label revision linked to this contribution.'
+            : `Your ${submission.kind.toLowerCase()} ${details.length > 1 ? 'are' : 'is'} now visible to the curatorial team. The public label has not changed by itself.`}</p>
 
         <div className="tracking-card">
           <div><small>Submission</small><strong>{submission.id}</strong></div>
@@ -87,7 +95,10 @@ export default async function SubmissionStatus({ params }: { params: Promise<{ i
             ))}
           </ol>
           {submission.status === 'needs information' && (
-            <p className="form-help">A curator has asked a follow-up question about this contribution.</p>
+            <p className="form-help">A curator needs more information before review can continue. No outcome has been recorded yet.</p>
+          )}
+          {closed && (
+            <p className="form-help">The recorded status is closed. It does not claim that the submitted account was verified, and no label change is attributed to it.</p>
           )}
         </div>
 
@@ -122,12 +133,18 @@ export default async function SubmissionStatus({ params }: { params: Promise<{ i
             <>
               <p className="effect-state">
                 {reflected
-                  ? 'A curator has marked your contribution as reflected in the public label.'
+                  ? reflectedPublication
+                    ? `A curator reflected this contribution in revision ${reflectedPublication.revision_number} of ${object.title}.`
+                    : 'A curator has marked your contribution as reflected in the public label. The legacy record does not identify a specific publication.'
                   : revisedSince
                     ? `The public label was revised to revision ${object.labelRevision} after your contribution arrived. A revision is published by a curator, and may draw on several sources.`
                     : `The public label is still at revision ${object.labelRevision}, unchanged since your contribution arrived.`}
               </p>
-              <blockquote className="current-label">{object.label}</blockquote>
+              <blockquote className="current-label">{reflectedPublication?.body ?? object.label}</blockquote>
+              {reflectedPublication && publicationOutcome?.previous && (
+                <LabelRevisionDiff before={publicationOutcome.previous.body} after={reflectedPublication.body}
+                  revision={reflectedPublication.revision_number} compact />
+              )}
               {object.labelAssertions.length > 0 && (
                 <ul className="assertion-standing">
                   {object.labelAssertions.map((assertion) => (

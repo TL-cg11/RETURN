@@ -358,6 +358,17 @@ async function main() {
   check('approved text becomes the public label', publishedDetail.json?.object?.label === edited, JSON.stringify(publishedDetail.json?.object?.label));
   check('publication advances the object version', publishedDetail.json?.object?.version === baseVersion + 1, `version ${publishedDetail.json?.object?.version} from ${baseVersion}`);
   check('the public revision number tracks the publication', publishedDetail.json?.object?.label_revision === publishedDetail.json?.object?.version, `revision ${publishedDetail.json?.object?.label_revision}`);
+  const reflectedList = await tool('list_submissions', { status: 'reflected in label', object_id: 'moonbird-mask' });
+  const reflectedSeed = reflectedList.json?.submissions?.find((item) => item.title === '1959 Aru village photograph');
+  check('publishing updates every evidence-linked contribution atomically', !!reflectedSeed, JSON.stringify(reflectedList.json?.submissions));
+  if (reflectedSeed) {
+    await setRole('community');
+    const reflectedPage = await get(`/submissions/${reflectedSeed.id}`);
+    check('the contributor outcome names the reflected revision', reflectedPage.status === 200
+      && reflectedPage.text.includes(`revision ${resolveResponse.json?.revision}`));
+    check('the contributor outcome shows the label diff', reflectedPage.text.includes('Label changes in revision'));
+    await setRole('curator');
+  }
   await setRole('curator');
   const afterResolve = await tool('check_approval', { approval_id: approvalId });
   check('check_approval reflects the decision', afterResolve.json?.status === 'approved_with_edit');
