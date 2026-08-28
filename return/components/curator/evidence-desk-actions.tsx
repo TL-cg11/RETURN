@@ -20,8 +20,16 @@ export function EvidenceDeskActions({ submissionId, objectId, hasPendingApproval
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ question }),
     });
+    const data = await response.json().catch(() => null) as { reason?: string; recovery?: string } | null;
     setPending(false);
-    if (!response.ok) { setResult('Could not send the question.'); return; }
+    if (!response.ok) {
+      // The gateway answers a refusal with what went wrong and what to do about it.
+      // This used to throw both away and print "Could not send the question.", so a
+      // curator whose question ran four characters over the limit was told only that
+      // something failed (F5-1). Every other action in this console already reads these.
+      setResult([data?.reason, data?.recovery].filter(Boolean).join(' ') || 'Could not send the question.');
+      return;
+    }
     setResult('Question sent. This contribution now needs information.');
     setAsking(false);
     router.refresh();

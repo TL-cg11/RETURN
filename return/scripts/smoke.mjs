@@ -930,6 +930,49 @@ async function main() {
   const contributePage = await get('/contribute');
   check('the form makes no claim about keeping a draft', !/draft stays in this browser/i.test(contributePage.text), 'the promise is still on the page');
   check('the form still says who controls the contribution', contributePage.text.includes('You control how the museum may use your contribution'));
+  /* ---------- 15. the third browser sweep (FIX_REQUEST_5.md) ---------- */
+  section('third sweep');
+  await post('/api/reset');
+  await setRole('curator');
+  const sweepCase = (await tool('list_submissions', {})).json?.submissions?.[0]?.id;
+
+  /* F5-2 — every refusal on every route answers in the four fields. */
+  const f5FourFields = (body) => !!body && body.error === undefined && body.reason !== undefined
+    && body.recovery !== undefined && (body.outcome === 'invalid' || body.outcome === 'denied' || body.outcome === 'error');
+  const clarifyMissing = await post('/api/curator/submissions/SUB-NOT-REAL/clarify', { question: 'A question?' });
+  check('clarify answers an unknown contribution in the tool contract', clarifyMissing.status === 404 && f5FourFields(clarifyMissing.json) && clarifyMissing.json?.field === 'submission_id', JSON.stringify(clarifyMissing.json).slice(0, 120));
+  const clarifyLong = await post(`/api/curator/submissions/${sweepCase}/clarify`, { question: 'Q'.repeat(401) });
+  check('clarify refuses an over-long question with a reason and a recovery', clarifyLong.status === 400 && f5FourFields(clarifyLong.json), JSON.stringify(clarifyLong.json).slice(0, 120));
+  check('the over-long refusal says what the limit is', /400 characters/.test(clarifyLong.json?.reason ?? ''), clarifyLong.json?.reason);
+  await setRole('community');
+  const clarifyRole = await post(`/api/curator/submissions/${sweepCase}/clarify`, { question: 'A question?' });
+  check('clarify answers a community session in the tool contract', clarifyRole.status === 403 && f5FourFields(clarifyRole.json), JSON.stringify(clarifyRole.json).slice(0, 120));
+  await setRole('curator');
+
+  /* Every failure path this suite can reach carries words the console can show. */
+  const refusals = [
+    ['unknown tool', await tool('not_a_real_tool_at_all', {})],
+    ['unknown approval', await post('/api/curator/approvals/APR-NOT-REAL/resolve', { action: 'approved', draft: 'x' })],
+    ['unknown referral', await post('/api/curator/escalations/ESC-NOT-REAL/resolve', { action: 'dismissed' })],
+    ['unknown asset', await req('/api/curator/assets/AST-NOT-REAL/publish', { method: 'POST' })],
+    ['unknown contribution', await post('/api/curator/submissions/SUB-NOT-REAL/clarify', { question: 'A question?' })],
+    ['malformed tool body', await req('/api/tools/list_objects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{oops' })],
+    ['out-of-range limit', await tool('list_submissions', { limit: 0 })],
+    ['review with no basis', await tool('open_return_review', { object_id: 'moonbird-mask', evidence_ids: ['EV-068'] })],
+  ];
+  const shapeless = refusals.filter(([, response]) => !f5FourFields(response.json));
+  check('no refusal answers outside the four-field contract', shapeless.length === 0, shapeless.map(([label, r]) => `${label}: ${JSON.stringify(r.json).slice(0, 60)}`).join(' | '));
+
+  /* F5-1 — a race on a referral is explained by the route, not guessed at by the console. */
+  const raceProposal = await tool('register_object', { title: `Race Probe ${stamp}`, accession: `RT.1972.R${stamp}`, basis: 'Nothing cited.' });
+  const raceId = raceProposal.json?.escalation_id;
+  check('a refused registration is referred to a curator', !!raceId, JSON.stringify(raceProposal.json).slice(0, 100));
+  const closedOnce = await post(`/api/curator/escalations/${raceId}/resolve`, { action: 'reviewed' });
+  check('a referral closes once', closedOnce.status === 200 && closedOnce.json?.resolved === true);
+  const closedTwice = await post(`/api/curator/escalations/${raceId}/resolve`, { action: 'reviewed' });
+  check('closing it again is refused with words the console can show', closedTwice.status === 409 && f5FourFields(closedTwice.json), JSON.stringify(closedTwice.json).slice(0, 120));
+  check('the race refusal names what already happened', /already reviewed/i.test(closedTwice.json?.reason ?? ''), closedTwice.json?.reason);
+  await setRole('community');
   /* ---------- report ---------- */
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${'-'.repeat(60)}`);

@@ -819,5 +819,12 @@ async function handleTool(request: Request, { params }: { params: Promise<{ name
     }
   }
 
-  return Response.json({ error: 'Unknown tool' }, { status: 404 });
+  // Unreachable while every catalogue name has a case above, and answered in the same
+  // shape as the rest so a future name added to the catalogue and not to the switch does
+  // not reintroduce a second contract (F5-2).
+  return Response.json({
+    outcome: 'invalid', field: 'name',
+    reason: `The tool ${name} is registered but this server has no handler for it.`,
+    recovery: 'Report the tool name; the catalogue and the server are out of step.',
+  }, { status: 500 });
 }

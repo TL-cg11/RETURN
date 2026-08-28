@@ -58,7 +58,9 @@ export async function POST(request: Request) {
   const body = await request.json().catch(() => ({})) as Body;
   const requestedId = body.objectId?.trim();
   const fallbackObject = await findObject(museumId, requestedId || 'moonbird-mask');
-  if (!fallbackObject) return Response.json({ error: 'No public object is available' }, { status: 404 });
+  if (!fallbackObject) {
+    return Response.json({ outcome: 'invalid', field: 'objectId', reason: 'No public object is available to contribute to.', recovery: 'Open a record from the collection and contribute from there.' }, { status: 404 });
+  }
   const objectId = fallbackObject.id;
 
   const title = (body.title ?? '').trim();

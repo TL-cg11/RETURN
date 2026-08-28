@@ -21,9 +21,14 @@ export function EscalationActions({ escalationId }: { escalationId: string }) {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ action }),
     });
+    const data = await response.json().catch(() => null) as { reason?: string; recovery?: string } | null;
     setPending('');
     if (!response.ok) {
-      setError(response.status === 409 ? 'Another session already closed this referral.' : 'Could not close this referral.');
+      // The route says what happened and what to do — including on a race, where it
+      // answers "This referral was already reviewed." This used to print a sentence of
+      // its own instead, which guessed at a second session and threw the real answer
+      // away (F5-1). The fallback is only for a response that carries no words at all.
+      setError([data?.reason, data?.recovery].filter(Boolean).join(' ') || 'Could not close this referral.');
       return;
     }
     router.refresh();

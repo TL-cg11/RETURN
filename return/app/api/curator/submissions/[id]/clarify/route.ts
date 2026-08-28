@@ -5,7 +5,12 @@ import { sessionFromRequest } from '@/lib/session';
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { role, museumId } = await sessionFromRequest(request);
-  if (role !== 'curator') return Response.json({ error: 'Curator role required' }, { status: 403 });
+  // This route answered its role check and its not-found path with `{ error }` while its
+  // own validation answered in the four fields — two shapes inside one file (F5-2). The
+  // conversions in OB-4 and F4-4 both missed it.
+  if (role !== 'curator') {
+    return Response.json({ outcome: 'denied', risk: 'LOW', reason: 'Curator role required.', recovery: 'Switch to the curator workspace.' }, { status: 403 });
+  }
 
   const { id } = await params;
   const body = await request.json() as { question?: string };
@@ -18,7 +23,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
 
   const submission = await getSubmission(museumId, id).catch(() => null);
-  if (!submission) return Response.json({ error: 'Submission not found' }, { status: 404 });
+  if (!submission) {
+    return Response.json({ outcome: 'invalid', field: 'submission_id', reason: 'No contribution with that id exists in this workspace.', recovery: 'Open the contribution from the submission inbox.' }, { status: 404 });
+  }
 
   const policy = evaluatePolicy({ actor: role, action: 'request_clarification', museumMatch: submission.museum_id === museumId });
   // The question used to exist only inside an activity log detail string, which the
