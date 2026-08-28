@@ -78,7 +78,7 @@ export function ObjectGallery({ images, children }: { images: GalleryImage[]; ch
         className={`gallery-frame${zooming ? ' is-zooming' : ''}`}
         ref={frame}
         onMouseMove={track}
-        onMouseLeave={() => zooming && setLens({ x: 0.5, y: 0.5 })}
+        /* Deliberately no mouse-leave state change: keep the point of inspection. */
         onKeyDown={steer}
         tabIndex={zooming ? 0 : -1}
         aria-label={zooming ? 'Magnified photograph. Use the arrow keys to move the magnifier, Escape to close it.' : undefined}
