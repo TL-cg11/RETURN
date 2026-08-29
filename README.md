@@ -41,8 +41,8 @@ npm run dev
 The project runs against a local D1 binding in development. Useful checks:
 
 ```bash
-npm run verify      # lint, typecheck, 133 unit tests, production build
-npm run test:smoke  # 187 end-to-end checks against a running server
+npm run verify      # lint, typecheck, 161 unit tests, production build
+npm run test:smoke  # 391 end-to-end checks against a running server
 npm run eval:tools  # WebMCP acceptance gate: context cost and tool confusability
 ```
 
@@ -55,8 +55,8 @@ reset. Start `npm run dev` first, then point it at that server:
 
 - `RETURN_PLAN.md` — full product and technical specification
 - `return/` — deployable application
-- `return/lib/policy/` — pure policy gateway and 65 unit tests
-- `return/lib/webmcp/` — 22 role-scoped WebMCP tool definitions and 26 registration tests
+- `return/lib/policy/` — pure policy gateway and 68 unit tests
+- `return/lib/webmcp/` — 22 role-scoped WebMCP tool definitions and 30 registration tests
 - `return/lib/assets/` — asset access rules and R2 storage
 - `return/lib/community/` — contribution field declarations, shared by the form, review, and validation
 - `return/db/` — D1 schema, per-workspace seeding, and the query layer

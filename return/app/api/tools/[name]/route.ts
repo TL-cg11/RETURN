@@ -34,6 +34,16 @@ const DECLARES_OBJECT_ID = new Set(
 );
 
 /**
+ * A field the catalogue declares required, arriving absent or blank.
+ *
+ * `takeText` judges type and length and then hands back a fallback, which is the right
+ * answer for a field the catalogue marks optional and the wrong one for a field it marks
+ * required: the caller learns nothing, and the record keeps a value nobody supplied.
+ * Presence is asked separately, on the raw argument, so a ceiling still refuses first.
+ */
+const absent = (value: unknown) => value === undefined || value === null || (typeof value === 'string' && value.trim() === '');
+
+/**
  * The tools that write. Read from the catalogue's own `readOnly` flag rather than
  * listed again here, so a new writing tool cannot be left off by hand (V9-4).
  */
@@ -427,14 +437,39 @@ async function handleTool(request: Request, name: string, session: Session) {
       const title = givenTitle || (claim.length > 80 ? `${claim.slice(0, 79)}…` : claim);
       if (!title) return invalid(name === 'submit_evidence' ? 'title' : 'claim', 'A contribution needs a short title or claim.', 'Describe the material in one line.');
 
+      // The catalogue declares these required and the handler supplied them instead, so a
+      // contribution could be stored with the description a curator reviews left empty, or
+      // with "Community agent" standing in for a source nobody named. A declared-required
+      // field is refused when it is absent, the way `title` and `basis` already are. Each
+      // tool is judged on its own list: `description` is required of evidence, `source` of
+      // a context claim, and neither declares the other's field.
+      if (name === 'submit_evidence' && absent(args.description)) {
+        return invalid('description', 'A contribution needs a description of the material.',
+          'Say what the material shows, and anything known about when and where it was made.');
+      }
+      if (name === 'submit_context_claim' && absent(args.source)) {
+        return invalid('source', 'A context claim needs the source it is offered on the authority of.',
+          'Name the person, archive, or record this claim comes from.');
+      }
+
       // MCP-E1 — an unrecognised consent level used to be stored verbatim and then read
       // back as quotable by every consumer downstream. Consent is the one field on a
       // contribution that decides what may be published, so it is refused at the door
       // rather than coerced: silently rewriting someone's answer is its own failure.
-      if (args.consent !== undefined && args.consent !== null && args.consent !== '' && !isConsent(args.consent)) {
+      //
+      // That covered a consent this system did not recognise. An absent one was still
+      // written on the contributor's behalf, as `private`, and answered `applied` — the
+      // same silent rewrite, reached by leaving the field out instead of getting it wrong.
+      // Both tools declare it required, and nobody but the contributor can choose it, so
+      // it is now refused rather than defaulted.
+      if (absent(args.consent)) {
+        return invalid('consent', 'A contribution needs the consent level its contributor chose.',
+          `Ask which of ${CONSENT_LEVELS.join(', ')} applies and send it. It is not defaulted, because nobody but the contributor can choose it.`);
+      }
+      if (!isConsent(args.consent)) {
         return invalid('consent', `Consent must be one of ${CONSENT_LEVELS.join(', ')}.`, 'Ask the contributor which of the three levels applies, then resubmit.');
       }
-      const consent: Consent = isConsent(args.consent) ? args.consent : 'private';
+      const consent: Consent = args.consent;
 
       const policy = evaluatePolicy({ actor: role, action: 'submit_evidence', museumMatch: record.id === objectId });
       const id = `SUB-${crypto.randomUUID().slice(0, 12).toUpperCase()}`;
@@ -743,20 +778,46 @@ async function handleTool(request: Request, name: string, session: Session) {
       if (!basis) return invalid('basis', 'A stewardship review needs the reason it is being asked for.', 'Say what makes this object a candidate for review, and cite the evidence for it.');
       const policy = evaluatePolicy({ actor: role, action: 'open_return_review', museumMatch: true, refs: resolvedRefs.refs });
       if (policy.outcome === 'pending_approval') {
+        /**
+         * A review that reaches a human is queued where a human can act on it.
+         *
+         * This branch answered `pending_approval` and wrote one activity line, and that
+         * was all: no row was created anywhere. So the highest-risk tool on the surface
+         * was the one whose hand-off did not exist — `check_approval` had no id to be
+         * given, `list_pending_approvals` never showed it, the console's pending count
+         * never moved, and the human the agent had been told to wait for was handed
+         * nothing. An agent polling as instructed would have waited forever.
+         *
+         * Queued as an escalation rather than an approval row, for the reason
+         * `register_object` gives: the approval contract is an immutable label snapshot
+         * (A4), and a stewardship review publishes no label. Routing it through the
+         * approvals table would have put `basis` in front of the resolve route, which
+         * publishes what it is given as public label text.
+         */
+        const reviewId = await createEscalation(museumId, {
+          objectId: record.id, tool: 'open_return_review',
+          args: { object_id: record.id, basis, evidence_ids: reviewCited },
+          policy: 'pending_stewardship_review', sourceRefs: reviewCited,
+        });
         await recordActivity(museumId, 'Curator Agent', 'requested a stewardship review', `${record.title} · ${basis}`, {
-          tool: 'open_return_review', target: record.id, risk: 'HIGH', policyDecision: 'pending_approval', result: 'queued',
+          tool: 'open_return_review', target: record.id, risk: 'HIGH', policyDecision: 'pending_approval', result: reviewId,
+        });
+        return Response.json({
+          ...policy, review_id: reviewId, object_id: record.id, transfers_custody: false,
+          note: 'This opens a human review process only. It does not transfer ownership or move the object.',
+          next: 'The referral is in the curator console. Nothing further is asked of the agent.',
         });
       }
       return Response.json({
         ...policy, object_id: record.id, transfers_custody: false,
         note: 'This opens a human review process only. It does not transfer ownership or move the object.',
-        ...(policy.outcome === 'pending_approval' ? {} : await escalate(museumId, policy, {
+        ...await escalate(museumId, policy, {
           tool: 'open_return_review', objectId: record.id,
           args: { object_id: record.id, basis, evidence_ids: reviewCited },
           sourceRefs: reviewCited,
           action: 'was denied a stewardship review',
           next: 'Attach a verified institutional record, or ask a curator to review the community material first.',
-        })),
+        }),
       });
     }
 

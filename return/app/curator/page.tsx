@@ -9,11 +9,20 @@ export const dynamic = 'force-dynamic';
 
 const pad = (value: number) => String(value).padStart(2, '0');
 
-/** Plain-language rendering of a policy code. The card must explain, not just label. */
+/**
+ * Plain-language rendering of a policy code. The card must explain, not just label.
+ *
+ * Two of these are not refusals. An agent that reaches the end of what it may decide
+ * hands the work over, and that arrives in the same queue as a refusal — so a card
+ * without an entry here read "The action was refused by policy." over a proposal the
+ * gateway had allowed as far as a human. The queue holds both, and says which is which.
+ */
 const POLICY_REASON: Record<string, string> = {
   submitted_sole_authority: 'Submitted evidence cannot be the sole authority for an official change.',
   visibility_restricted: 'Restricted or sealed material cannot appear in public output.',
   consent_not_public: 'The evidence consent does not permit public quotation.',
+  pending_human_registration: 'An agent proposed a new collection record. Only a curator can create it.',
+  pending_stewardship_review: 'An agent asked for a stewardship review. Only a curator can open one.',
 };
 
 function sourceRefs(raw: string) {
@@ -55,7 +64,7 @@ export default async function CuratorDashboard() {
       {escalations.length > 0 && (
         <section className="escalation-panel">
           <header>
-            <div><p className="console-eyebrow">Referred to you</p><h2>The gateway refused {escalationTotal === 1 ? 'an action' : `${escalationTotal} actions`}</h2></div>
+            <div><p className="console-eyebrow">Referred to you</p><h2>{escalationTotal === 1 ? 'An action is waiting on you' : `${escalationTotal} actions are waiting on you`}</h2></div>
             <p>An agent stopped short of the official record and handed the question over. Nothing was published.</p>
           </header>
           {escalations.map((item) => (

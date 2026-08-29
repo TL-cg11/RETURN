@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { registerWebMcpTools } from './register.ts';
+import { modelContextStatus, registerWebMcpTools } from './register.ts';
 import { communityTools, curatorTools, sharedTools } from './tools.ts';
 
 type Registered = {
@@ -260,6 +260,39 @@ test('using the legacy navigator getter warns that it is deprecated', () => with
   registerWebMcpTools('community');
   assert.ok(warnings.some((line) => /deprecated/i.test(line) && /navigator\.modelContext/.test(line)), warnings.join(' | '));
 }));
+
+/* The curator panel reports registration to a reader, and it read the browser itself
+   rather than asking the registrar — so it called a legacy browser unregistered while
+   the registrar was registering on it, and printed a catalogue count as "registered" on
+   a browser exposing neither getter. The status and the registration are now one answer,
+   and these three cases are where they used to disagree. */
+test('the reported status agrees with the registrar on a current browser', () => withModelContext((registered) => {
+  const status = modelContextStatus();
+  registerWebMcpTools('curator');
+  assert.deepEqual(status, { available: true, legacy: false });
+  assert.equal(registered.length > 0, status.available);
+}));
+
+test('the reported status agrees with the registrar on a legacy browser', () => withLegacyNavigator((registered) => {
+  const status = modelContextStatus();
+  registerWebMcpTools('community');
+  assert.deepEqual(status, { available: true, legacy: true });
+  assert.equal(registered.length > 0, status.available);
+}));
+
+test('the reported status agrees with the registrar on a browser with no host API', () => {
+  const globals = globalThis as { document?: unknown };
+  const previousDocument = globals.document;
+  const previousWarn = console.warn;
+  globals.document = {};
+  console.warn = () => {};
+  try {
+    assert.deepEqual(modelContextStatus(), { available: false, legacy: false });
+  } finally {
+    globals.document = previousDocument;
+    console.warn = previousWarn;
+  }
+});
 
 test('document.modelContext wins when a browser exposes both', () => {
   const onDocument: Registered[] = [];

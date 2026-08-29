@@ -49,6 +49,20 @@ function resolveContext(): { context?: ModelContext; legacy: boolean } {
   return { legacy: false };
 }
 
+/**
+ * What a surface can tell a reader about its own registration.
+ *
+ * The curator panel asked `document.modelContext` directly and reported on that alone,
+ * which disagreed with the registrar twice over: it called a legacy browser — one that
+ * exposes only `navigator.modelContext`, where `registerWebMcpTools` does register —
+ * unregistered, while a heading beside it counted the catalogue and called every entry
+ * "registered" on a browser exposing neither. One resolution, read by both.
+ */
+export function modelContextStatus(): { available: boolean; legacy: boolean } {
+  const { context, legacy } = resolveContext();
+  return { available: !!context, legacy };
+}
+
 function specFor(tool: ToolSpec, signal: AbortSignal) {
   return {
     name: tool.name,

@@ -3,7 +3,7 @@
 import { NavLink as Link } from '@/components/shared/nav-link';
 import { usePathname, useRouter } from 'next/navigation';
 import { ReactNode, useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { registerWebMcpTools } from '@/lib/webmcp/register';
+import { modelContextStatus, registerWebMcpTools } from '@/lib/webmcp/register';
 import { useLiveRecord } from '@/lib/live/use-live-record';
 import { communityTools, curatorTools } from '@/lib/webmcp/tools';
 import { diffLabelText } from '@/lib/label-diff';
@@ -71,7 +71,7 @@ export function CuratorShell({
   const approval = approvals.find((item) => item.id === openedId) ?? approvals[0] ?? null;
   const [panel, setPanel] = useState<'tools' | 'policy' | null>(null);
   const collapsed = useSyncExternalStore(subscribeNav, readNavCollapsed, () => false);
-  const [mcpAvailable, setMcpAvailable] = useState<boolean | null>(null);
+  const [mcp, setMcp] = useState<{ available: boolean; legacy: boolean } | null>(null);
   const [draft, setDraft] = useState(approval?.snapshot ?? '');
   const [resolved, setResolved] = useState('');
   const [error, setError] = useState('');
@@ -208,8 +208,9 @@ export function CuratorShell({
             type="button"
             onClick={() => {
               // Read the browser surface as the panel opens, so the status
-              // reflects this session rather than a stale render.
-              setMcpAvailable(typeof document !== 'undefined' && !!document.modelContext);
+              // reflects this session rather than a stale render. Asked of the
+              // registrar, so the panel cannot disagree with what it did.
+              setMcp(modelContextStatus());
               setPanel(panel === 'tools' ? null : 'tools');
             }}
           >
@@ -233,7 +234,14 @@ export function CuratorShell({
               <div>
                 <p className="risk-label">{panel === 'tools' ? 'Agent surface' : 'Server-side enforcement'}</p>
                 <h2 id="panel-title">{panel === 'tools' ? 'WebMCP tools in this session' : 'Policy gateway'}</h2>
-                <span>{panel === 'tools' ? `${curatorTools.length} curator tools registered` : 'Every consequential call passes through it'}</span>
+                {/* The count is the catalogue; "registered" is a claim about this
+                    browser. Saying both as one sentence stated that 15 tools were
+                    registered directly above the line explaining that none were. */}
+                <span>{panel === 'tools'
+                  ? mcp?.available
+                    ? `${curatorTools.length} curator tools registered in this browser`
+                    : `${curatorTools.length} curator tools on this surface · none registered in this browser`
+                  : 'Every consequential call passes through it'}</span>
               </div>
               <button type="button" onClick={() => setPanel(null)} aria-label="Close">×</button>
             </header>
@@ -241,10 +249,12 @@ export function CuratorShell({
             {panel === 'tools' ? (
               <section>
                 <p className="mcp-status">
-                  <i className={mcpAvailable ? 'verified-dot' : 'question-dot'} />
-                  {mcpAvailable
-                    ? 'document.modelContext is available — these tools are live in this browser.'
-                    : 'document.modelContext is not exposed by this browser, so nothing is registered here. The same tools stay reachable over /api/tools/.'}
+                  <i className={mcp?.available ? 'verified-dot' : 'question-dot'} />
+                  {mcp?.available
+                    ? mcp.legacy
+                      ? 'navigator.modelContext is available — these tools are live in this browser, on the deprecated getter.'
+                      : 'document.modelContext is available — these tools are live in this browser.'
+                    : 'Neither document.modelContext nor navigator.modelContext is exposed by this browser, so nothing is registered here. The same tools stay reachable over /api/tools/.'}
                 </p>
                 <p className="mcp-status">
                   <i className={liveTransport === 'stream' ? 'verified-dot' : 'question-dot'} />

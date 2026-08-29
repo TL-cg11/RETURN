@@ -733,7 +733,17 @@ async function main() {
   check('an undefined consent level is refused', rogueConsent.json?.outcome === 'invalid' && rogueConsent.json?.field === 'consent', JSON.stringify(rogueConsent.json));
   check('the refusal names the levels that exist', /private.*public_anonymous.*public_attributed/.test(rogueConsent.json?.reason ?? ''), rogueConsent.json?.reason);
   const noConsent = await tool('submit_evidence', { object_id: 'moonbird-mask', title: 'Consent omitted', description: 'x' });
-  check('an omitted consent still defaults to private', noConsent.json?.outcome === 'applied', JSON.stringify(noConsent.json));
+  check('an omitted consent is refused rather than defaulted', noConsent.json?.outcome === 'invalid' && noConsent.json?.field === 'consent', JSON.stringify(noConsent.json));
+  const blankConsent = await tool('submit_evidence', { object_id: 'moonbird-mask', title: 'Consent blank', description: 'x', consent: '   ' });
+  check('a blank consent is refused too', blankConsent.json?.field === 'consent', JSON.stringify(blankConsent.json).slice(0, 120));
+  const claimNoConsent = await tool('submit_context_claim', { object_id: 'moonbird-mask', claim: 'A claim', source: 'A source' });
+  check('a context claim without consent is refused', claimNoConsent.json?.field === 'consent', JSON.stringify(claimNoConsent.json).slice(0, 120));
+  const noDescription = await tool('submit_evidence', { object_id: 'moonbird-mask', title: 'Description omitted', consent: 'private' });
+  check('evidence without its required description is refused', noDescription.json?.field === 'description', JSON.stringify(noDescription.json).slice(0, 120));
+  const noSource = await tool('submit_context_claim', { object_id: 'moonbird-mask', claim: 'A claim', consent: 'private' });
+  check('a context claim without its required source is refused', noSource.json?.field === 'source', JSON.stringify(noSource.json).slice(0, 120));
+  const claimKeepsOptionalDescription = await tool('submit_context_claim', { object_id: 'moonbird-mask', claim: 'A claim', source: 'A source', consent: 'private' });
+  check('a tool is judged only on the fields it declares', claimKeepsOptionalDescription.json?.outcome === 'applied', JSON.stringify(claimKeepsOptionalDescription.json).slice(0, 120));
   const goodConsent = await tool('submit_evidence', { object_id: 'moonbird-mask', title: 'Consent given', description: 'x', consent: 'public_attributed' });
   check('a declared consent level is accepted', goodConsent.json?.outcome === 'applied', JSON.stringify(goodConsent.json));
   const rogueForm = await post('/api/community/evidence', {
@@ -742,12 +752,16 @@ async function main() {
   });
   check('the contribution form refuses it too rather than rewriting it', rogueForm.status === 400 && rogueForm.json?.field === 'consent', `status ${rogueForm.status}`);
 
-  /* MCP-E2 — consent is read as a permission, so the private default is not quotable. */
+  /* MCP-E2 — consent is read as a permission, so a private contribution is not quotable.
+     The fixture declares `private` rather than reaching it by leaving consent out: that
+     route is refused now, and the permission being checked here is the level itself. */
+  const declaredPrivate = await tool('submit_evidence', { object_id: 'moonbird-mask', title: 'Consent private', description: 'x', consent: 'private' });
+  check('a declared private level is accepted', declaredPrivate.json?.outcome === 'applied', JSON.stringify(declaredPrivate.json));
   await setRole('curator');
   const reviewListed = await tool('list_submissions', { limit: 50 });
-  const privateRow = reviewListed.json?.submissions?.find((row) => row.id === noConsent.json?.submission_id);
+  const privateRow = reviewListed.json?.submissions?.find((row) => row.id === declaredPrivate.json?.submission_id);
   check('a private contribution is not marked quotable', privateRow?.quotable === false, JSON.stringify(privateRow));
-  const privateCase = await tool('get_review_case', { case_id: noConsent.json?.submission_id });
+  const privateCase = await tool('get_review_case', { case_id: declaredPrivate.json?.submission_id });
   check('a private contribution withholds its body from the case', privateCase.json?.submitted?.description === null);
   check('a private contribution says it cannot be quoted',
     (privateCase.json?.consent_restrictions ?? []).some((line) => /cannot be quoted/.test(line)),
@@ -900,6 +914,18 @@ async function main() {
   check('a review with a blank basis is refused', reviewBlankBasis.json?.field === 'basis');
   const reviewWithBasis = await tool('open_return_review', { object_id: 'moonbird-mask', basis: 'A community request names this object.', evidence_ids: ['EV-068'] });
   check('a review with a basis reaches human review', reviewWithBasis.json?.outcome === 'pending_approval', JSON.stringify(reviewWithBasis.json).slice(0, 120));
+  /* A hand-off to a human that creates nothing is not a hand-off. The tool used to
+     answer `pending_approval` and write only an activity line, so the queue it named
+     never held the review and the agent had no id to poll. */
+  const reviewId = reviewWithBasis.json?.review_id;
+  check('a queued review returns the id of what a human will act on', !!reviewId, JSON.stringify(reviewWithBasis.json).slice(0, 120));
+  const reviewQueue = await get('/curator');
+  check('a queued review is visible to the human it waits on', reviewQueue.status === 200 && reviewQueue.text.includes(reviewId ?? ' '), `status ${reviewQueue.status}`);
+  check('a queued review reads as waiting rather than refused', reviewQueue.text.includes('Only a curator can open one.'), 'the referral card called it a refusal');
+  const reviewClosed = await post(`/api/curator/escalations/${reviewId}/resolve`, { action: 'reviewed', note: 'Taken to the stewardship committee.' });
+  check('a queued review can be closed by a human', reviewClosed.status === 200 && reviewClosed.json?.resolved === true, JSON.stringify(reviewClosed.json).slice(0, 120));
+  const reviewApprovals = await tool('list_pending_approvals', {});
+  check('a stewardship review never enters the label approval queue', !(reviewApprovals.json?.approvals ?? []).some((a) => a.id === reviewId), 'a review reached the label publication path');
   const auditTrail = await get('/curator/activity');
   check('no stewardship review is logged with an invented reason', !auditTrail.text.includes('no basis given'), 'the placeholder reached the audit trail');
 
@@ -920,7 +946,7 @@ async function main() {
 
   /* F4-3 — the two counts answer the same question. */
   await setRole('community');
-  const countCase = await tool('submit_evidence', { object_id: 'moonbird-mask', title: 'Attachment count probe', consent: 'public_attributed' });
+  const countCase = await tool('submit_evidence', { object_id: 'moonbird-mask', title: 'Attachment count probe', description: 'x', consent: 'public_attributed' });
   const countSub = countCase.json?.submission_id;
   const fileA = (await upload('image/png', 'count-a.png')).json?.id;
   const fileB = (await upload('image/png', 'count-b.png')).json?.id;
