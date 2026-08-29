@@ -86,6 +86,10 @@ export function ContributionForm({ objectId, objects, fromObject }: { objectId: 
       if (kinds.length === 0) { setError('Choose at least one kind of material.'); return false; }
       if (!title.trim()) { setError('A contribution needs a short title.'); return false; }
     }
+    if (current.id === 'consent' && consent === 'public_attributed' && !source.trim()) {
+      setError('Choosing “Public, with my name” means the record carries a name. Add the name to show, or choose “Public, without my name”.');
+      return false;
+    }
     if (current.id.startsWith('detail:')) {
       const kind = (current as { kind: ContributionKind }).kind;
       const missing = missingFields([{ kind, values: values[kind] ?? {} }]);
@@ -199,7 +203,11 @@ export function ContributionForm({ objectId, objects, fromObject }: { objectId: 
             </div>
             {/* Every ceiling in this form is the one the route checks against, so nothing
                 a contributor can type here is refused five steps later (V7-5). */}
-            <label>Short title<LimitedInput value={title} max={MAX_TEXT.title} onValueChange={setTitle} placeholder="1959 Aru village photograph" required /></label>
+            {/* Marked the way the detail steps mark theirs (V10-3). The browser already
+                refuses to submit without it, but that only says so after the attempt;
+                every other required field on this form says so before. */}
+            <label><span className="field-name">Short title<b aria-hidden="true"> *</b></span>
+              <LimitedInput value={title} max={MAX_TEXT.title} onValueChange={setTitle} placeholder="1959 Aru village photograph" required /></label>
             <label>Where did this come from?<LimitedInput value={source} max={MAX_TEXT.source} onValueChange={setSource} placeholder="Family archive of Ena Varo" /></label>
           </>
         )}
@@ -277,6 +285,17 @@ export function ContributionForm({ objectId, objects, fromObject }: { objectId: 
                 </label>
               ))}
             </fieldset>
+            {/* V10-1 — "with my name" is a promise the record has to be able to keep.
+                The byline reads `source`, which until now was only asked for in the first
+                step as "Where did this come from?" — a question about the material, not
+                about the contributor. Left blank, the record answered "Contributor chose
+                not to be named" to someone who had chosen the opposite. Asking here, where
+                the choice is made, is the only place the two can be held together. */}
+            {consent === 'public_attributed' && (
+              <label><span className="field-name">The name to show on the record<b aria-hidden="true"> *</b></span>
+                <LimitedInput value={source} max={MAX_TEXT.source} onValueChange={setSource} required />
+              </label>
+            )}
             <label>What would you like to happen?<LimitedInput value={requestedOutcome} max={MAX_TEXT.requestedOutcome} onValueChange={setRequestedOutcome} /></label>
           </>
         )}

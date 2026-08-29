@@ -110,6 +110,17 @@ export const POST = guardedWrite(async (request: Request, session) => {
     return Response.json({ outcome: 'invalid', field: 'consent', reason: `Consent must be one of ${CONSENT_LEVELS.join(', ')}.`, recovery: 'Choose a consent level on the consent step.' }, { status: 400 });
   }
   const consent: Consent = isConsent(body.consent) ? body.consent : 'private';
+  // V10-1 — `public_attributed` is a consent to be *named*, so a name has to exist for
+  // it to mean anything. Stored without one, the record read back "Contributor chose not
+  // to be named" to someone who had chosen the opposite. The record cannot invent a name,
+  // so the combination is refused where it is made rather than resolved silently later.
+  if (consent === 'public_attributed' && !source) {
+    return Response.json({
+      outcome: 'invalid', field: 'source',
+      reason: 'Consent to be named was given, but no name was sent to show.',
+      recovery: 'Send the name to appear on the record as source, or use public_anonymous.',
+    }, { status: 400 });
+  }
   const assetIds$ = takeStringList(body.assetIds, 'assetIds', { max: MAX_ASSETS_PER_CONTRIBUTION, label: 'The attached files' });
   if (refused(assetIds$)) return assetIds$.refusal;
   const assetIds = assetIds$;

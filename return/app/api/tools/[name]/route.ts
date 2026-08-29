@@ -759,13 +759,28 @@ async function handleTool(request: Request, name: string, session: Session) {
         evidenceFor(museumId, row.object_id, 'agent'),
       ]);
       const verified = evidence.filter((item) => item.authority === 'verified');
+      /**
+       * Which of the contributor's citations resolve to a record here (V10-4).
+       *
+       * `submit_evidence` already answers this on the way in, as `omitted_evidence_refs`.
+       * The read answer listed the same ids flat and said nothing, and the two arrays it
+       * did carry could not be differenced into it: `verified_evidence` means verified
+       * *authority*, not existence, so a real-but-submitted reference sat outside it
+       * beside one that resolves to nothing at all. A curator reading the case saw two
+       * identical lines that meant different things.
+       */
+      const citedRefs = parseIdList(row.evidence_refs);
+      const resolvedRefs = await getEvidenceByIds(museumId, citedRefs, 'curator');
+      const omittedRefs = citedRefs.filter((ref) => !resolvedRefs.some((item) => item.id === ref));
       return Response.json({
         case_id: row.id,
         object: record && { id: record.id, title: record.title, label: record.label, gap: record.gap },
         // What the contributor said this material speaks to. Stored since the first
         // contribution and readable nowhere on the tool surface until now, so a curator
         // agent could not see the connection the contributor drew (F4-3).
-        submitted: { ...publicSubmission(row), evidence_refs: parseIdList(row.evidence_refs) },
+        submitted: { ...publicSubmission(row), evidence_refs: citedRefs },
+        // Named in the same words the write answer uses, so one vocabulary covers both.
+        omitted_evidence_refs: omittedRefs,
         verified_evidence: verified,
         conflicts: verified.length
           ? ['The current label implies clear prior custody, but the 1968 invoice names no prior owner.']

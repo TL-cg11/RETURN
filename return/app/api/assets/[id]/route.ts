@@ -2,7 +2,7 @@ import { getAsset as getAssetRow } from '@/db/queries';
 import { assetAccess } from '@/lib/assets/access';
 import { getAsset } from '@/lib/assets/storage';
 import { sessionFromRequest } from '@/lib/session';
-import type { Consent, Visibility } from '@/lib/domain/types';
+import { isQuotable, type Consent, type Visibility } from '@/lib/domain/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,6 +31,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   const object = await getAsset(row.storage_key);
   if (!object) return new Response('Not found', { status: 404 });
 
+  // The one branch of `assetAccess` that does not consult the role: these bytes are the
+  // same answer for every caller, so a cache holding them cannot answer for the wrong one.
+  const servedToAnyone = row.visibility === 'public' && isQuotable(row.consent as Consent);
+
   return new Response(object.body, {
     headers: {
       'content-type': row.content_type,
@@ -43,8 +47,21 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
         : `attachment; filename="${row.file_name.replaceAll('"', '')}"`,
       'content-security-policy': "default-src 'none'; sandbox",
       'x-content-type-options': 'nosniff',
-      // Access depends on the session role, so a shared cache must not answer for another.
-      'cache-control': 'private, max-age=300',
+      /**
+       * Only material anyone may see is worth storing (V10-2).
+       *
+       * `private, max-age=300` on every asset was wrong for the ones a role decides.
+       * `private` excludes shared caches; it does not exclude the viewer's own, and the
+       * role that decided this response lives in a cookie the cache never looked at. A
+       * curator who read a restricted file and switched to the community view could read
+       * it again from that cache for five minutes without the server being asked.
+       *
+       * A publicly-served asset is the same bytes for everyone, so it keeps the window.
+       * Anything reached on the strength of a role is not stored at all, and `Vary` says
+       * why for whatever cache does look.
+       */
+      'cache-control': servedToAnyone ? 'private, max-age=300' : 'no-store',
+      vary: 'Cookie',
     },
   });
 }

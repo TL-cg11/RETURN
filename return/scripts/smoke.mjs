@@ -55,12 +55,42 @@ async function req(path, init = {}) {
   const text = await response.text();
   let json = null;
   try { json = JSON.parse(text); } catch { /* html */ }
-  return { status: response.status, text, json };
+  // Headers are returned too: a few rules live only there — the cache window an asset
+  // is served with (V10-2) among them.
+  return { status: response.status, text, json, headers: response.headers };
 }
 
 const get = (path) => req(path);
 const post = (path, body) => req(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body ?? {}) });
 const tool = (name, args) => post(`/api/tools/${name}`, args);
+
+/**
+ * The arguments each tool actually declares (V10-5).
+ *
+ * Several probes below used to spray one superset of arguments at every tool and read
+ * the refusal that came back. That worked while an undeclared argument was ignored. It
+ * stopped working when the surface began refusing undeclared arguments and naming what
+ * the tool takes — the probes then measured that refusal instead of the rule they were
+ * written for, and eight checks failed against a build in which every one of those rules
+ * still held. A probe carries the tool's own arguments, so what it reads back is the
+ * answer to the question it asked.
+ */
+const DECLARED = {
+  propose_label_update: { object_id: 'moonbird-mask', draft: 'A draft.', evidence_ids: ['EV-068'] },
+  compare_evidence: { evidence_ids: ['EV-068', 'EV-059'] },
+  draft_label: { object_id: 'moonbird-mask' },
+  build_provenance_timeline: { object_id: 'moonbird-mask' },
+  open_return_review: { object_id: 'moonbird-mask', basis: 'A basis.', evidence_ids: ['EV-068'] },
+  register_object: { title: 'A title', accession: 'RT.9.X', period: 'A period', material: 'A material', origin: 'An origin', basis: 'A basis.', evidence_ids: ['EV-068'] },
+  request_clarification: { submission_id: 'SUB-1041', question: 'A question?' },
+  check_approval: { approval_id: 'APR-NONE' },
+  get_review_case: { case_id: 'SUB-1041' },
+  get_asset_detail: { asset_id: 'AST-NONE' },
+  list_objects: {},
+  list_submissions: {},
+  submit_evidence: { object_id: 'moonbird-mask', title: 'A title', description: 'A description.', consent: 'public_anonymous' },
+};
+const declaredFor = (name, overrides) => ({ ...(DECLARED[name] ?? {}), ...overrides });
 
 async function setRole(role) {
   const response = await post('/api/session', { role });
@@ -308,7 +338,14 @@ async function main() {
   const largePage = await tool('list_submissions', { limit: 30 });
   check('list_submissions honours limit', smallPage.json?.returned <= 3 && largePage.json?.returned <= 30, `${smallPage.json?.returned} / ${largePage.json?.returned}`);
   check('list_submissions reports the full count alongside the page', typeof smallPage.json?.count === 'number' && smallPage.json.count >= smallPage.json.returned);
-  check('a truncated list says so and how to narrow it', smallPage.json.count <= 3 || typeof smallPage.json?.next === 'string');
+  // `next` was a sentence and is now a cursor an agent can act on — {offset, limit,
+  // remaining}. What this check is for is unchanged: a list that did not fit says so and
+  // says how to reach the rest.
+  const truncationCursor = smallPage.json?.next;
+  check('a truncated list says so and how to narrow it',
+    smallPage.json.count <= 3
+      || (!!truncationCursor && Number.isInteger(truncationCursor.offset) && truncationCursor.remaining > 0),
+    JSON.stringify(truncationCursor));
   check('list size tracks the page, not the workspace', smallPage.text.length < largePage.text.length || smallPage.json.count <= 3, `${smallPage.text.length} vs ${largePage.text.length}`);
 
   /* ---------- 7c. audit trail (B3) ---------- */
@@ -507,6 +544,20 @@ async function main() {
   const attach = await tool('attach_assets', { submission_id: toolSubmission.json?.submission_id, asset_ids: [toolUpload.json?.id] });
   check('attach_assets binds an uploaded file to a contribution', attach.status === 200 && attach.json?.attached === 1, JSON.stringify(attach.json?.attached));
   check('attach_assets says the file stays restricted', attach.json?.visibility === 'restricted');
+
+  /* V10-2 — an asset the role decides must not sit in the viewer's own cache. `private`
+     excludes shared caches only, and the role that decided the answer lives in a cookie
+     no cache consults, so a curator who read a restricted file and switched to the
+     community view could read it again for five minutes without the server being asked. */
+  await setRole('curator');
+  const v10Restricted = await get(`/api/assets/${toolUpload.json?.id}`);
+  check('a restricted asset is served with no cache window at all',
+    /no-store/.test(v10Restricted.headers?.get('cache-control') ?? ''), v10Restricted.headers?.get('cache-control'));
+  check('and says the answer turns on the cookie',
+    /cookie/i.test(v10Restricted.headers?.get('vary') ?? ''), v10Restricted.headers?.get('vary'));
+  check('and the same file is refused outright to the community',
+    (await (async () => { await setRole('community'); return get(`/api/assets/${toolUpload.json?.id}`); })()).status === 403,
+    'a restricted asset reached a community session');
   const attachNothing = await tool('attach_assets', { submission_id: toolSubmission.json?.submission_id, asset_ids: [] });
   check('attach_assets with no ids is refused', attachNothing.status === 400, `status ${attachNothing.status}`);
   const attachUnknown = await tool('attach_assets', { submission_id: 'SUB-NOT-REAL', asset_ids: [toolUpload.json?.id] });
@@ -526,7 +577,15 @@ async function main() {
   check('a community listing hides the restricted upload', !listed.json?.assets?.some((a) => a.id === toolUpload.json?.id));
   check('a community listing still says something is withheld', listed.json?.withheld_count >= 1, `withheld ${listed.json?.withheld_count}`);
   const detailDenied = await tool('get_asset_detail', { asset_id: toolUpload.json?.id });
-  check('get_asset_detail refuses restricted material to the community', detailDenied.status === 403 && detailDenied.json?.policy === 'consent_not_public', `status ${detailDenied.status}`);
+  // The code depends on which permission is missing: consent that forbids publication
+  // answers `consent_not_public`, and consent that permits it while no curator has
+  // published answers `visibility_restricted`. Both are refusals that say why, which is
+  // the rule; pinning one of the two codes pinned the fixture instead.
+  check('get_asset_detail refuses restricted material to the community',
+    detailDenied.status === 403
+      && ['consent_not_public', 'visibility_restricted'].includes(detailDenied.json?.policy)
+      && !!detailDenied.json?.recovery,
+    `status ${detailDenied.status} policy ${detailDenied.json?.policy}`);
   const detailUnknown = await tool('get_asset_detail', { asset_id: 'AST-NOT-REAL' });
   check('get_asset_detail treats an unknown id as simply unavailable', detailUnknown.status === 400, `status ${detailUnknown.status}`);
 
@@ -1042,8 +1101,8 @@ async function main() {
   const f6Citing = ['propose_label_update', 'compare_evidence', 'draft_label', 'build_provenance_timeline', 'open_return_review', 'register_object'];
   const unbounded = [];
   for (const name of f6Citing) {
-    const f6Response = await tool(name, { object_id: 'moonbird-mask', draft: 'd', basis: 'b', title: 'T', accession: 'RT.9.B', evidence_ids: manyIds });
-    if (f6Response.status >= 500 || f6Response.json?.field !== 'evidence_ids') unbounded.push(`${name} → ${f6Response.status} ${f6Response.json?.outcome ?? ''}`);
+    const f6Response = await tool(name, declaredFor(name, { evidence_ids: manyIds }));
+    if (f6Response.status >= 500 || f6Response.json?.field !== 'evidence_ids') unbounded.push(`${name} → ${f6Response.status} ${f6Response.json?.outcome ?? ''} ${f6Response.json?.field ?? ''}`);
   }
   check('every citing tool refuses an over-long list at the door', unbounded.length === 0, unbounded.join(' | '));
   const twelve = await tool('compare_evidence', { evidence_ids: Array.from({ length: 12 }, () => 'EV-068') });
@@ -1056,19 +1115,19 @@ async function main() {
   ];
   const uncapped = [];
   for (const [field, length] of overLong) {
-    const f6Response = await tool('submit_evidence', { object_id: 'moonbird-mask', title: 'Cap probe', [field]: 'x'.repeat(length) });
-    if (f6Response.json?.outcome !== 'invalid' || f6Response.json?.field !== field) uncapped.push(`${field} at ${length} → ${f6Response.json?.outcome}`);
+    const f6Response = await tool('submit_evidence', declaredFor('submit_evidence', { [field]: 'x'.repeat(length) }));
+    if (f6Response.json?.outcome !== 'invalid' || f6Response.json?.field !== field) uncapped.push(`${field} at ${length} → ${f6Response.json?.outcome} ${f6Response.json?.field ?? ''}`);
   }
   check('every stored contribution field has a ceiling', uncapped.length === 0, uncapped.join(' | '));
   await setRole('curator');
   const curatorCaps = [];
   for (const [name, args, field] of [
-    ['register_object', { title: 'x'.repeat(141), accession: 'RT.9.C', basis: 'b' }, 'title'],
-    ['register_object', { title: 'Cap', accession: 'x'.repeat(61), basis: 'b' }, 'accession'],
-    ['open_return_review', { object_id: 'moonbird-mask', basis: 'x'.repeat(2001) }, 'basis'],
-    ['propose_label_update', { object_id: 'moonbird-mask', draft: 'x'.repeat(6001) }, 'draft'],
+    ['register_object', { title: 'x'.repeat(141) }, 'title'],
+    ['register_object', { accession: 'x'.repeat(61) }, 'accession'],
+    ['open_return_review', { basis: 'x'.repeat(2001) }, 'basis'],
+    ['propose_label_update', { draft: 'x'.repeat(6001) }, 'draft'],
   ]) {
-    const f6Response = await tool(name, args);
+    const f6Response = await tool(name, declaredFor(name, args));
     if (f6Response.json?.field !== field) curatorCaps.push(`${name}/${field} → ${f6Response.json?.outcome} ${f6Response.json?.field}`);
   }
   check('every stored curator field has a ceiling', curatorCaps.length === 0, curatorCaps.join(' | '));
@@ -1217,7 +1276,7 @@ async function main() {
   ];
   const v7ToolUncapped = [];
   for (const [name, field, value] of v7ToolArgs) {
-    const response = await tool(name, { object_id: 'moonbird-mask', submission_id: 'SUB-1041', draft: 'A draft.', basis: 'A basis.', title: 'A title', accession: 'RT.9.X', question: 'A question?', [field]: value });
+    const response = await tool(name, declaredFor(name, { [field]: value }));
     if (response.json?.outcome !== 'invalid' || response.json?.field !== field) {
       v7ToolUncapped.push(`${name}/${field} → ${response.status} ${response.json?.outcome} ${response.json?.field}`);
     }
@@ -1225,7 +1284,7 @@ async function main() {
   check('every tool argument is held to a ceiling, ids and filters included', v7ToolUncapped.length === 0, v7ToolUncapped.join(' | '));
   const v7NonText = [];
   for (const [name, field] of v7ToolArgs) {
-    const response = await tool(name, { object_id: 'moonbird-mask', submission_id: 'SUB-1041', draft: 'A draft.', basis: 'A basis.', title: 'A title', accession: 'RT.9.X', question: 'A question?', [field]: { a: 1 } });
+    const response = await tool(name, declaredFor(name, { [field]: { a: 1 } }));
     if (response.json?.outcome !== 'invalid' || response.json?.field !== field) {
       v7NonText.push(`${name}/${field} → ${response.status} ${response.json?.outcome} ${response.json?.field}`);
     }
@@ -1322,7 +1381,7 @@ async function main() {
   await setRole('community');
   const v8Token = await post('/api/community/evidence', {
     objectId: 'moonbird-mask', title: 'A'.repeat(140), kinds: ['Object information'],
-    details: [{ kind: 'Object information', values: { claim: 'A claim.' } }], consent: 'public_attributed',
+    details: [{ kind: 'Object information', values: { claim: 'A claim.' } }], source: 'Verification run', consent: 'public_attributed',
   });
   check('a title at the ceiling is still accepted', v8Token.status === 200, `status ${v8Token.status}`);
   const v8Page = await get('/objects/moonbird-mask');
@@ -1332,15 +1391,23 @@ async function main() {
      Hoisting the `object_id` read made every tool refuse one, including the tools whose
      schema declares no parameters at all — while the same call carrying a malformed
      `title` was ignored. Two answers for one kind of undeclared field. */
+  /* The rule V7-10 fixed was "no stricter than its own catalogue", and the catalogue has
+     since changed: every schema is published `additionalProperties: false`, so refusing an
+     undeclared argument is now what the catalogue says rather than a departure from it.
+     The property that still has to hold is that the surface and the schema agree, and that
+     the refusal tells the caller what the tool does take — a silent drop reads to an agent
+     as "that field worked". */
   await setRole('curator');
   const v8Undeclared = [['get_collection_summary', {}], ['list_pending_approvals', {}], ['check_approval', { approval_id: 'APR-NONE' }]];
-  const v8TooStrict = [];
+  const v8Disagreed = [];
   for (const [name, args] of v8Undeclared) {
     const spurious = await tool(name, { ...args, object_id: 'moonbird-mask' });
-    const clean = await tool(name, args);
-    if (spurious.status !== clean.status) v8TooStrict.push(`${name}: ${clean.status} clean vs ${spurious.status} with object_id`);
+    if (spurious.status !== 400 || spurious.json?.field !== 'object_id' || !/does not take object_id/.test(spurious.json?.reason ?? '')) {
+      v8Disagreed.push(`${name}: ${spurious.status} ${spurious.json?.field ?? ''}`);
+    }
+    if (!/It takes/.test(spurious.json?.recovery ?? '')) v8Disagreed.push(`${name}: recovery does not say what it takes`);
   }
-  check('a tool that does not declare object_id ignores one', v8TooStrict.length === 0, v8TooStrict.join(' | '));
+  check('a tool that does not declare object_id refuses one and says what it takes', v8Disagreed.length === 0, v8Disagreed.join(' | '));
   /* The other direction, which is the one a gate like this gets wrong: every tool that
      does declare `object_id` must still be judged on it. A gate applied to the wrong set
      would let an unchecked id through to the query rather than refuse it here. */
@@ -1469,12 +1536,64 @@ async function main() {
     if (carries !== (level === 'public_attributed')) v9Named.push(`${level} ${carries ? 'names' : 'withholds'} the contributor`);
   }
   check('only attributed consent lets the agent surface name the contributor', v9Named.length === 0, v9Named.join(' | '));
+
+  /* V10-1 — consent to be named is a promise the record has to be able to keep.
+     `public_attributed` stored with no name read back to the public as "Contributor
+     chose not to be named", the opposite of what the contributor had chosen. The
+     combination is refused where it is made rather than resolved silently later. */
+  await setRole('community');
+  const v10NoName = await post('/api/community/evidence', {
+    objectId: 'moonbird-mask', title: 'Named without a name', consent: 'public_attributed',
+    kinds: ['Object information'], details: [{ kind: 'Object information', values: { claim: 'No name given.' } }],
+  });
+  check('consent to be named without a name to show is refused',
+    v10NoName.status === 400 && v10NoName.json?.field === 'source', `status ${v10NoName.status} field ${v10NoName.json?.field}`);
+  check('and the refusal offers the two ways out',
+    /public_anonymous/.test(v10NoName.json?.recovery ?? '') && /name/.test(v10NoName.json?.recovery ?? ''), v10NoName.json?.recovery);
+  const v10Blank = await post('/api/community/evidence', {
+    objectId: 'moonbird-mask', title: 'Named with blank', source: '   ', consent: 'public_attributed',
+    kinds: ['Object information'], details: [{ kind: 'Object information', values: { claim: 'Blank name.' } }],
+  });
+  check('a blank name is refused the same way as an absent one', v10Blank.status === 400, `status ${v10Blank.status}`);
+  const v10Named = await post('/api/community/evidence', {
+    objectId: 'moonbird-mask', title: 'Named with a name', source: 'Ada Kestrel', consent: 'public_attributed',
+    kinds: ['Object information'], details: [{ kind: 'Object information', values: { claim: 'A name given.' } }],
+  });
+  check('a name given with the consent is accepted', v10Named.status === 200, `status ${v10Named.status}`);
+  const v10Page = await get('/objects/moonbird-mask');
+  check('and the public record shows that name rather than the anonymous line',
+    v10Page.text.includes('Ada Kestrel'), 'name absent from the record page');
+  await setRole('curator');
   const v9Anonymous = await tool('get_review_case', { case_id: v9Consented.public_anonymous });
   check('an anonymous contribution still carries its body', v9Anonymous.json?.submitted?.description !== null,
     JSON.stringify(v9Anonymous.json?.submitted).slice(0, 110));
   check('and says plainly that it must not be attributed',
     (v9Anonymous.json?.consent_restrictions ?? []).some((line) => /not to be named/.test(line)),
     JSON.stringify(v9Anonymous.json?.consent_restrictions));
+  /* V10-4 — the read answer marks which citations resolve, in the words the write
+     answer already uses. `verified_evidence` cannot stand in for this: it means
+     verified *authority*, so a real-but-submitted reference sat outside it beside one
+     that resolves to nothing at all, and the two lines read identically. */
+  await setRole('community');
+  const v10Refs = await tool('submit_evidence', {
+    object_id: 'moonbird-mask', title: 'Citation resolution probe',
+    description: 'One reference that resolves and one that does not.',
+    consent: 'public_anonymous', evidence_refs: ['EV-068', 'EV-NOT-REAL'],
+  });
+  check('a contribution naming an unresolvable reference still files, and says which',
+    v10Refs.status === 200 && (v10Refs.json?.omitted_evidence_refs ?? []).join() === 'EV-NOT-REAL',
+    JSON.stringify(v10Refs.json?.omitted_evidence_refs));
+  await setRole('curator');
+  const v10Case = await tool('get_review_case', { case_id: v10Refs.json?.submission_id });
+  check('the review case lists both references it was given',
+    (v10Case.json?.submitted?.evidence_refs ?? []).length === 2, JSON.stringify(v10Case.json?.submitted?.evidence_refs));
+  check('and names the one that resolves to nothing',
+    (v10Case.json?.omitted_evidence_refs ?? []).join() === 'EV-NOT-REAL', JSON.stringify(v10Case.json?.omitted_evidence_refs));
+  const v10Plain = await tool('get_review_case', { case_id: v9Consented.public_anonymous });
+  check('a case citing nothing answers with an empty list rather than a missing field',
+    Array.isArray(v10Plain.json?.omitted_evidence_refs) && v10Plain.json.omitted_evidence_refs.length === 0,
+    JSON.stringify(v10Plain.json?.omitted_evidence_refs));
+
   const v9Private = await tool('get_review_case', { case_id: v9Consented.private });
   check('a private contribution withholds body and name together',
     v9Private.json?.submitted?.description === null && v9Private.json?.submitted?.contributor === null,
@@ -1490,7 +1609,7 @@ async function main() {
   const v9Objects = ['moonbird-mask', 'riverstone-vessel', 'four-winds-bowl', 'dawn-marker'];
   for (let index = 0; index < 30; index++) {
     await post('/api/community/evidence', {
-      objectId: v9Objects[index % v9Objects.length], title: `Paging ${index}`, consent: 'public_attributed',
+      objectId: v9Objects[index % v9Objects.length], title: `Paging ${index}`, source: 'Verification run', consent: 'public_attributed',
       kinds: ['Object information'], details: [{ kind: 'Object information', values: { claim: `Claim ${index}.` } }],
     });
   }
@@ -1539,7 +1658,7 @@ async function main() {
   await setRole('community');
   const v9Before = (await get('/api/session')).json?.museumId;
   const v9Own = await post('/api/community/evidence', {
-    objectId: 'moonbird-mask', title: 'Own workspace probe', consent: 'public_attributed',
+    objectId: 'moonbird-mask', title: 'Own workspace probe', source: 'Verification run', consent: 'public_attributed',
     kinds: ['Object information'], details: [{ kind: 'Object information', values: { claim: 'Mine.' } }],
   });
   check('a session that has one already keeps writing into it',
