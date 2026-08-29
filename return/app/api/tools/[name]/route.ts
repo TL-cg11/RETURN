@@ -1,8 +1,8 @@
 import {
-  attachAssetsToSubmission, countByStatus, countSubmissionsByObject, createEscalation, getApproval, getAsset, getEvidenceByIds, getSubmission,
+  attachAssetsToSubmission, countByStatus, countSubmissionsByObject, createEscalation, getApproval, getAsset, getEscalation, getEvidenceByIds, getSubmission,
   objectWithAccession,
   appendClarification, parseClarifications,
-  listActivity, listApprovals, listObjectAssets, listObjects, listSubmissionAssets, listSubmissions, recordActivity,
+  listActivity, listApprovals, listEscalations, listObjectAssets, listObjects, listSubmissionAssets, listSubmissions, recordActivity,
   setSubmissionStatus, SUBMISSION_STATUSES, workspaceSummary, type AssetRow, type SubmissionRow,
 } from '@/db/queries';
 import { APPROVAL_TTL_MS, ensureDatabase, sha256 } from '@/db/setup';
@@ -187,6 +187,17 @@ function publicSubmission(row: SubmissionRow) {
     quotable: !withheld,
     created_at: row.created_at,
   };
+}
+
+/** A stored JSON id list, read back defensively: a malformed column is an empty list. */
+function parseIdList(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((value) => typeof value === 'string') : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -540,6 +551,19 @@ async function handleTool(request: Request, name: string, session: Session) {
       }
       const consent: Consent = args.consent;
 
+      /**
+       * An `evidence_refs` id that resolves to nothing is named, not dropped in silence.
+       *
+       * The catalogue says these are "existing evidence ids this material speaks to", and
+       * a typo in one used to be stored and answered `applied` with nothing said — the
+       * same failure as a silently truncated value, and the opposite of what
+       * `compare_evidence` does with `omitted_evidence_ids` for the identical mistake.
+       * The contribution is still filed: the refs are context for a curator, not the
+       * authority for anything, so a bad one is worth reporting and not worth refusing.
+       */
+      const knownRefs = await getEvidenceByIds(museumId, evidenceRefs, 'agent');
+      const omittedRefs = evidenceRefs.filter((ref) => !knownRefs.some((item) => item.id === ref));
+
       const policy = evaluatePolicy({ actor: role, action: 'submit_evidence', museumMatch: record.id === objectId });
       const id = `SUB-${crypto.randomUUID().slice(0, 12).toUpperCase()}`;
       const db = await ensureDatabase(museumId);
@@ -553,7 +577,14 @@ async function handleTool(request: Request, name: string, session: Session) {
       await recordActivity(museumId, 'Community Agent', 'submitted new evidence', title, {
         tool: name, target: id, risk: 'MEDIUM', policyDecision: 'applied', result: id,
       });
-      return Response.json({ ...policy, submission_id: id, object_id: record.id, authority: 'submitted', status: 'received' });
+      return Response.json({
+        ...policy, submission_id: id, object_id: record.id, authority: 'submitted', status: 'received',
+        ...(evidenceRefs.length ? { evidence_refs: evidenceRefs } : {}),
+        ...(omittedRefs.length ? {
+          omitted_evidence_refs: omittedRefs,
+          note: 'The contribution was filed. The listed evidence_refs match no evidence record in this workspace and carry no weight in review.',
+        } : {}),
+      });
     }
 
     case 'check_submission': {
@@ -636,21 +667,42 @@ async function handleTool(request: Request, name: string, session: Session) {
       // A limit this system cannot honour is refused rather than bent into one it can
       // (F4-5). Clamping turned -5 into 1 and 0 into 20, so a caller counting on its own
       // number read a page size it never asked for. An absent limit still means 20.
-      if (args.limit !== undefined) {
-        const asked = Number(args.limit);
-        if (!Number.isInteger(asked) || asked < 1 || asked > 100) {
-          return invalid('limit', 'A limit must be a whole number between 1 and 100.', 'Ask for a page size in that range, or omit limit for the default of 20.');
-        }
+      //
+      // `Number()` was doing the reading, so "5" passed as 5 while the catalogue declares
+      // an integer and every other type mismatch on this surface is refused rather than
+      // coerced. A string that happens to parse is still not the type that was asked for.
+      const whole = (value: unknown) => typeof value === 'number' && Number.isInteger(value);
+      if (args.limit !== undefined && (!whole(args.limit) || (args.limit as number) < 1 || (args.limit as number) > 100)) {
+        return invalid('limit', 'A limit must be a whole number between 1 and 100, sent as a number rather than a string.',
+          'Ask for a page size in that range, or omit limit for the default of 20.');
       }
-      const limit = args.limit === undefined ? 20 : Number(args.limit);
-      const page = rows.slice(0, limit);
+      if (args.offset !== undefined && (!whole(args.offset) || (args.offset as number) < 0)) {
+        return invalid('offset', 'An offset must be a whole number of 0 or more, sent as a number rather than a string.',
+          'Pass the offset a previous page returned in next.offset, or omit it to start at the first contribution.');
+      }
+      const limit = args.limit === undefined ? 20 : args.limit as number;
+      const offset = args.offset === undefined ? 0 : args.offset as number;
+      const page = rows.slice(offset, offset + limit);
+      const nextOffset = offset + page.length;
       return Response.json({
         count: rows.length,
+        offset,
         returned: page.length,
         submissions: page.map(listedSubmission),
         untrusted_content: true,
-        ...(rows.length > page.length
-          ? { next: `Showing ${page.length} of ${rows.length}. Narrow with status or object_id, or raise limit.` }
+        /**
+         * A cursor an agent can act on, not a sentence describing the problem.
+         *
+         * `next` used to be prose — "Showing 3 of 10. Narrow with status or object_id, or
+         * raise limit." — which told a reader a page was partial and gave a caller no way
+         * to read the rest. With limit capped at 100, a workspace past a hundred
+         * contributions had rows that no sequence of tool calls could reach.
+         */
+        ...(rows.length > nextOffset
+          ? {
+            next: { offset: nextOffset, limit, remaining: rows.length - nextOffset },
+            note: 'Call list_submissions again with next.offset and the same filters to read the following page.',
+          }
           : {}),
       });
     }
@@ -710,7 +762,10 @@ async function handleTool(request: Request, name: string, session: Session) {
       return Response.json({
         case_id: row.id,
         object: record && { id: record.id, title: record.title, label: record.label, gap: record.gap },
-        submitted: publicSubmission(row),
+        // What the contributor said this material speaks to. Stored since the first
+        // contribution and readable nowhere on the tool surface until now, so a curator
+        // agent could not see the connection the contributor drew (F4-3).
+        submitted: { ...publicSubmission(row), evidence_refs: parseIdList(row.evidence_refs) },
         verified_evidence: verified,
         conflicts: verified.length
           ? ['The current label implies clear prior custody, but the 1968 invoice names no prior owner.']
@@ -898,7 +953,7 @@ async function handleTool(request: Request, name: string, session: Session) {
         return Response.json({
           ...policy, review_id: reviewId, object_id: record.id, transfers_custody: false,
           note: 'This opens a human review process only. It does not transfer ownership or move the object.',
-          next: 'The referral is in the curator console. Nothing further is asked of the agent.',
+          next: 'The referral is in the curator console. Poll check_approval with review_id, or continue other research.',
         });
       }
       return Response.json({
@@ -920,18 +975,53 @@ async function handleTool(request: Request, name: string, session: Session) {
       if (refused(approvalId$)) return approvalId$.refusal;
       const id = approvalId$;
       const row = id ? await getApproval(museumId, id) : null;
-      if (!row) return invalid('approval_id', 'No approval with that id exists in this workspace.', 'Call list_pending_approvals to list open requests.');
+      if (row) {
+        return Response.json({
+          id: row.id, kind: 'approval' as const, status: row.status, resolution: row.resolution, risk: row.risk,
+          object_id: row.object_id, snapshot_hash: row.snapshot_hash, blocking: false,
+        });
+      }
+      /**
+       * A referral is the other thing a HIGH call can become, and it was not pollable.
+       *
+       * `open_return_review` and `register_object` answer `pending_approval` and hand back
+       * an `ESC-` id, because neither publishes a label and the approval contract is an
+       * immutable label snapshot (A4). But this tool only ever looked in `approvals`, so
+       * the two highest-risk tools on the surface returned an id that the tool named in
+       * their own `next` line refused as nonexistent. An agent told to wait had no way to
+       * see the wait end. Both queues answer here now, told apart by `kind`.
+       */
+      const referral = id ? await getEscalation(museumId, id) : null;
+      if (!referral) {
+        return invalid('approval_id', 'No approval or referral with that id exists in this workspace.',
+          'Call list_pending_approvals to list open requests; it lists label approvals and referrals alike.');
+      }
       return Response.json({
-        id: row.id, status: row.status, resolution: row.resolution, risk: row.risk,
-        object_id: row.object_id, snapshot_hash: row.snapshot_hash, blocking: false,
+        id: referral.id, kind: 'referral' as const,
+        // `open` is what an approval calls `pending`; a curator closes it as reviewed or
+        // dismissed. Reported in both vocabularies so one poll reads the same either way.
+        status: referral.status === 'open' ? 'pending' : 'resolved',
+        resolution: referral.status === 'open' ? null : referral.status,
+        risk: 'HIGH', tool: referral.tool, policy: referral.policy,
+        object_id: referral.object_id, blocking: false,
+        note: 'A referral is resolved in the curator console. It publishes nothing on its own.',
       });
     }
 
     case 'list_pending_approvals': {
-      const [rows, counts] = await Promise.all([listApprovals(museumId, 'pending'), countByStatus(museumId)]);
+      const [rows, referrals, counts] = await Promise.all([
+        listApprovals(museumId, 'pending'),
+        // The same queue `check_approval` now answers from, so what an agent can poll is
+        // also what it can discover. Referrals carry no label snapshot and no object
+        // version: a proposed record has no object behind it yet.
+        listEscalations(museumId, 'open', 50),
+        countByStatus(museumId),
+      ]);
+      const pendingReferrals = referrals.filter((row) => row.policy.startsWith('pending_'));
       return Response.json({
-        count: rows.length,
-        approvals: rows.map((row) => ({ id: row.id, risk: row.risk, status: row.status, object_id: row.object_id, object_version: row.object_version })),
+        count: rows.length + pendingReferrals.length,
+        approvals: rows.map((row) => ({ id: row.id, kind: 'approval' as const, risk: row.risk, status: row.status, object_id: row.object_id, object_version: row.object_version })),
+        referrals: pendingReferrals.map((row) => ({ id: row.id, kind: 'referral' as const, risk: 'HIGH', status: 'pending', tool: row.tool, policy: row.policy, object_id: row.object_id })),
         open_submissions: counts.all,
         note: 'Polling does not block. Continue other research while a human reviews.',
       });
@@ -1009,6 +1099,11 @@ async function handleTool(request: Request, name: string, session: Session) {
       // Only unattached assets in this workspace move, and they inherit the
       // contribution's consent. An id belonging to another contribution simply does
       // not match, so the returned count comes back lower than the ids supplied.
+      //
+      // Read first so the answer can separate what this call moved from what was already
+      // there. `attached` deliberately counts both (F4-3), which left a replay of the same
+      // call answering `attached: 1` twice with nothing saying the second moved nothing.
+      const heldBefore = await listSubmissionAssets(museumId, submission.id);
       await attachAssetsToSubmission(museumId, submission.id, ids, submission.consent, submission.object_id);
       const held = await listSubmissionAssets(museumId, submission.id);
       // Both numbers are read back from the contribution, so they answer the same question:
@@ -1019,6 +1114,7 @@ async function handleTool(request: Request, name: string, session: Session) {
       // on the contribution is attached, whether this call is what put it there or not.
       const omitted = ids.filter((id) => !held.some((asset) => asset.id === id));
       const attached = ids.length - omitted.length;
+      const alreadyAttached = ids.filter((id) => heldBefore.some((asset) => asset.id === id));
 
       // Nothing moved. `applied` here told an agent its files were on the contribution
       // when no file was: the ids were unknown, already spoken for, or in another
@@ -1043,8 +1139,15 @@ async function handleTool(request: Request, name: string, session: Session) {
       });
       return Response.json({
         ...policy, submission_id: submission.id, attached, requested: ids.length,
+        newly_attached: attached - alreadyAttached.length,
         // Named, not silently dropped — the pattern compare_evidence already uses.
         ...(omitted.length > 0 ? { omitted_asset_ids: omitted } : {}),
+        // A second `note` here would be overwritten by the restriction line below, so the
+        // reading is carried by its own key rather than a field that already has an owner.
+        ...(alreadyAttached.length > 0 ? {
+          already_attached_asset_ids: alreadyAttached,
+          already_attached_note: 'Counted in attached because they are on the contribution; this call did not move them.',
+        } : {}),
         total_on_contribution: held.length, visibility: 'restricted',
         note: 'Attached files stay restricted to curatorial review until a curator publishes them.',
       });
@@ -1107,7 +1210,7 @@ async function handleTool(request: Request, name: string, session: Session) {
         return Response.json({
           ...policy, proposal_id: proposalId, proposed_object_id: proposedId, created: false,
           note: 'Nothing was added to the collection. A curator creates the record.',
-          next: 'Open the curator console and register the record, or add evidence to the proposal.',
+          next: 'A curator registers it from the console. Poll check_approval with proposal_id to see the referral close.',
         });
       }
 
