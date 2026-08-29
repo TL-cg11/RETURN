@@ -13,7 +13,7 @@ const PER_PAGE = 6;
 
 export default async function Home({ searchParams }: { searchParams: Promise<{ page?: string }> }) {
   const { page } = await searchParams;
-  const { museumId } = await sessionFromCookies();
+  const { museumId, role } = await sessionFromCookies();
   const collection = await collectionFor(museumId);
   const moonbird = collection.find((object) => object.id === 'moonbird-mask') ?? collection[0];
   if (!moonbird) return null;
@@ -23,7 +23,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ p
 
   return (
     <main id="main" tabIndex={-1}>
-      <CommunityHeader />
+      <CommunityHeader role={role} />
 
       <section className="hero" aria-labelledby="hero-title">
         <div className="hero-copy">

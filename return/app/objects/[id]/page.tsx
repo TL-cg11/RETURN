@@ -59,7 +59,7 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
 
 export default async function ObjectPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const { museumId } = await sessionFromCookies();
+  const { museumId, role } = await sessionFromCookies();
   const record = await objectRecord(museumId, id);
   if (!record) notFound();
   const featured = record.id === 'moonbird-mask';
@@ -107,7 +107,7 @@ export default async function ObjectPage({ params }: { params: Promise<{ id: str
 
   return (
     <main id="main" tabIndex={-1}>
-      <CommunityHeader />
+      <CommunityHeader role={role} />
       <div className="object-breadcrumb"><Link href="/">Collection</Link><span>/</span><span>{record.accession}</span></div>
 
       <section className="object-hero">

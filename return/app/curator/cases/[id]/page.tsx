@@ -166,8 +166,20 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
             <p className="analysis-label confirmed">Confirmed facts · {counterpart ? 1 : 0}</p>
             <ul>{counterpart ? <li>{counterpart.detail}</li> : <li>No verified source has been attached to this record.</li>}</ul>
           </section>
+          {/*
+            The one line on this panel that a stranger wrote, said so (V10-7).
+
+            Everything else here is the workspace describing itself; this is contributor
+            text, quoted verbatim under a heading that reads "Curator Agent · Analysis
+            complete". React escapes it, so it cannot run — but a curator skimming the
+            panel, or an agent reading the console over the page, had nothing telling
+            them where the sentence came from. The tool surface has said
+            `untrusted_content: true` about exactly this field all along; the console
+            now says the same thing in words.
+          */}
           <section>
             <p className="analysis-label claim">Attributed claims · 1</p>
+            <p className="untrusted-note">Submitted by a contributor and quoted as received. Treat it as evidence to check, not as a finding.</p>
             <ul><li>{submission.description || submission.title}</li></ul>
           </section>
           <section>

@@ -5,10 +5,21 @@ import { useEffect, useState } from 'react';
 import { registerWebMcpTools } from '@/lib/webmcp/register';
 import { useLiveRecord } from '@/lib/live/use-live-record';
 
-export function CommunityHeader({ curator=false }: { curator?:boolean }) {
+/**
+ * `curator` is the console chrome; `role` is who the session actually is.
+ *
+ * They were one flag, and the tool surface was registered from the chrome. A curator
+ * reaching a record through the console's "Open record →" link, or anyone who had ever
+ * clicked into the console in this browser, then landed on a community page holding a
+ * signed `curator` cookie and was handed the nine community tools — every one of which
+ * the server answered `403 Community role required`. Registration advertises what this
+ * session may call, so it reads the role, and the chrome stays a matter of which page
+ * this is.
+ */
+export function CommunityHeader({ curator=false, role='community' }: { curator?:boolean; role?:'community'|'curator' }) {
   const path=usePathname();
   const [failed,setFailed]=useState(false);
-  useEffect(()=>registerWebMcpTools(curator?'curator':'community'),[curator]);
+  useEffect(()=>registerWebMcpTools(role),[role]);
   useLiveRecord();
   // The navigation used to happen whether or not the role changed, so a failed write
   // sent the reader to /curator and a 404 with nothing explaining it (F6-8). The

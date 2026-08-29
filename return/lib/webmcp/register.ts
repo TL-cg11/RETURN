@@ -67,7 +67,10 @@ function specFor(tool: ToolSpec, signal: AbortSignal) {
   return {
     name: tool.name,
     description: tool.description,
-    inputSchema: { type: 'object', properties: tool.properties ?? {}, required: tool.required ?? [] },
+    // `additionalProperties:false` so the schema says what the server does. An argument
+    // the catalogue never declared used to be accepted in silence, which reads to an
+    // agent as "that field worked" — the same failure as a silently-truncated value.
+    inputSchema: { type: 'object', properties: tool.properties ?? {}, required: tool.required ?? [], additionalProperties: false },
     annotations: { readOnlyHint: tool.readOnly, untrustedContentHint: tool.untrusted ?? false },
     // The specification's only defined way to take a registration back.
     signal,

@@ -19,7 +19,7 @@ export default async function ContributePage({ searchParams }: { searchParams: P
 
   return (
     <main id="main" tabIndex={-1} className="contribute-page">
-      <CommunityHeader />
+      <CommunityHeader role={role} />
       <div className="object-breadcrumb">
         <Link href={`/objects/${selected.id}`}>← {selected.title}</Link>
         <span>/</span>

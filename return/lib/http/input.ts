@@ -104,7 +104,7 @@ export function takeStringList(value: unknown, field: string, options: { max: nu
   }
   if (value.length > max) {
     return refuse(field, `${label} takes at most ${max} entries, and this one has ${value.length}.`,
-      `Send fewer than ${max} at a time.`);
+      `Send ${max} or fewer at a time.`);
   }
   const ids: string[] = [];
   for (const entry of value) {

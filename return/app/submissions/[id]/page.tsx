@@ -48,7 +48,7 @@ function parseDetails(raw: string): KindDetail[] {
 
 export default async function SubmissionStatus({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const { museumId } = await sessionFromCookies();
+  const { museumId, role } = await sessionFromCookies();
   const submission = await getSubmission(museumId, id);
   if (!submission) notFound();
 
@@ -73,7 +73,7 @@ export default async function SubmissionStatus({ params }: { params: Promise<{ i
 
   return (
     <main id="main" tabIndex={-1}>
-      <CommunityHeader />
+      <CommunityHeader role={role} />
       <section className="status-page">
         <p className="eyebrow">{reflected || closed ? 'Review outcome' : 'Contribution received'}</p>
         <div className="status-check">✓</div>

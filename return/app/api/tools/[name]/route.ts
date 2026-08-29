@@ -3,7 +3,7 @@ import {
   objectWithAccession,
   appendClarification, parseClarifications,
   listActivity, listApprovals, listObjectAssets, listObjects, listSubmissionAssets, listSubmissions, recordActivity,
-  setSubmissionStatus, workspaceSummary, type AssetRow, type SubmissionRow,
+  setSubmissionStatus, SUBMISSION_STATUSES, workspaceSummary, type AssetRow, type SubmissionRow,
 } from '@/db/queries';
 import { APPROVAL_TTL_MS, ensureDatabase, sha256 } from '@/db/setup';
 import { buildLabelApprovalSnapshot, canonicalJson } from '@/lib/approval-snapshot';
@@ -42,6 +42,49 @@ const DECLARES_OBJECT_ID = new Set(
  * Presence is asked separately, on the raw argument, so a ceiling still refuses first.
  */
 const absent = (value: unknown) => value === undefined || value === null || (typeof value === 'string' && value.trim() === '');
+
+/** Every catalogue entry, once, so the tables below cannot drift from what is registered. */
+const CATALOGUE = [...curatorTools, ...communityTools];
+
+/** The argument names each tool declares. Anything else is refused at the door. */
+const DECLARED_FIELDS = new Map(
+  CATALOGUE.map((tool) => [tool.name, new Set(Object.keys(tool.properties ?? {}))]),
+);
+
+/** The arguments each tool declares required, read from the catalogue rather than listed by hand. */
+const REQUIRED_FIELDS = new Map(CATALOGUE.map((tool) => [tool.name, tool.required ?? []]));
+
+/** The catalogue's own description of a field, which is the best recovery line there is. */
+const FIELD_DESCRIPTION = new Map(
+  CATALOGUE.flatMap((tool) => Object.entries(tool.properties ?? {}).map(([field, schema]) =>
+    [`${tool.name}.${field}`, (schema as { description?: string }).description ?? ''] as const,
+  )).filter(([, description]) => description !== ''),
+);
+
+/**
+ * The absences that deserve better than the generic line.
+ *
+ * Consent is the field that decides what may be published and nobody but the contributor
+ * can choose it, so it says so; the other two name what a curator will be reading.
+ */
+const REQUIRED_REFUSAL: Record<string, { reason: string; recovery: string }> = {
+  'submit_evidence.description': {
+    reason: 'A contribution needs a description of the material.',
+    recovery: 'Say what the material shows, and anything known about when and where it was made.',
+  },
+  'submit_context_claim.source': {
+    reason: 'A context claim needs the source it is offered on the authority of.',
+    recovery: 'Name the person, archive, or record this claim comes from.',
+  },
+  'submit_evidence.consent': {
+    reason: 'A contribution needs the consent level its contributor chose.',
+    recovery: `Ask which of ${CONSENT_LEVELS.join(', ')} applies and send it. It is not defaulted, because nobody but the contributor can choose it.`,
+  },
+  'submit_context_claim.consent': {
+    reason: 'A contribution needs the consent level its contributor chose.',
+    recovery: `Ask which of ${CONSENT_LEVELS.join(', ')} applies and send it. It is not defaulted, because nobody but the contributor can choose it.`,
+  },
+};
 
 /**
  * The tools that write. Read from the catalogue's own `readOnly` flag rather than
@@ -326,6 +369,44 @@ async function handleTool(request: Request, name: string, session: Session) {
     }
   }
   /**
+   * An argument this tool never declared, refused rather than ignored (V10-1).
+   *
+   * `submit_evidence` accepted an `object_hint` nobody had ever defined and answered
+   * `applied`, which reads as "that field was recorded" — the same silent success a
+   * truncated value used to give. The catalogue now says `additionalProperties:false`,
+   * and this is what makes the schema true. Read before the required check so a call
+   * that misspelt a required field is told the name it actually sent.
+   */
+  const declared = DECLARED_FIELDS.get(name) ?? new Set<string>();
+  const undeclared = Object.keys(args).filter((key) => !declared.has(key));
+  if (undeclared.length > 0) {
+    const one = undeclared.length === 1;
+    return invalid(undeclared[0],
+      `${name} does not take ${undeclared.join(', ')}.`,
+      declared.size > 0
+        ? `It takes ${[...declared].join(', ')}. Remove the ${one ? 'extra field' : 'extra fields'} and send the call again.`
+        : 'It takes no arguments. Send {}.');
+  }
+
+  /**
+   * A field the catalogue declares required, judged for every tool from the catalogue
+   * itself (V10-2).
+   *
+   * The check existed for three fields on the two contribution tools and nowhere else,
+   * so every declared-required id fell through to its own lookup and came back as "No
+   * object with that id is in this collection." — the same answer a wrong id gets. An
+   * agent that had simply left the argument out was told its id was bad.
+   */
+  for (const field of REQUIRED_FIELDS.get(name) ?? []) {
+    if (!absent(args[field])) continue;
+    const stated = REQUIRED_REFUSAL[`${name}.${field}`];
+    if (stated) return invalid(field, stated.reason, stated.recovery);
+    const described = FIELD_DESCRIPTION.get(`${name}.${field}`);
+    return invalid(field, `${name} declares ${field} required, and this call did not carry it.`,
+      described ? `Send ${field}: ${described}` : `Send ${field} and call it again.`);
+  }
+
+  /**
    * Every argument this route reads goes through `takeText`, ids included (V7-7).
    *
    * The stored fields were converted last round and the lookup keys were not, which is
@@ -367,6 +448,15 @@ async function handleTool(request: Request, name: string, session: Session) {
       });
     }
 
+    /**
+     * Both are reads, and both now answer like one (V10-3).
+     *
+     * `build_provenance_timeline` spread a policy verdict into its answer, so a tool the
+     * catalogue registers `readOnlyHint: true` came back `{"outcome":"applied","risk":"LOW"}`
+     * — the envelope a write uses, over a call that wrote nothing. Nothing here is being
+     * decided, so nothing here reports a decision; it carries `untrusted_content` instead,
+     * which is what its `untrustedContentHint` promises and what it was missing.
+     */
     case 'get_provenance_timeline':
     case 'build_provenance_timeline': {
       const access = name === 'get_provenance_timeline' ? 'public' : 'agent';
@@ -390,7 +480,7 @@ async function handleTool(request: Request, name: string, session: Session) {
         return Response.json({
           ...body,
           note: 'Working timeline only. The official record is unchanged. No evidence was cited, so this is the whole recorded timeline.',
-          ...evaluatePolicy({ actor: role, action: 'draft_label', museumMatch: true }),
+          untrusted_content: true,
         });
       }
       const citation = citationProblem(await refsFrom(museumId, args, record.id, timelineCited), record.id);
@@ -409,7 +499,7 @@ async function handleTool(request: Request, name: string, session: Session) {
         note: resting.length > 0
           ? 'Working timeline from the cited evidence only. Gaps are listed in full regardless of what was cited. The official record is unchanged.'
           : 'No recorded event rests on the cited evidence. Gaps are listed in full. The official record is unchanged.',
-        ...evaluatePolicy({ actor: role, action: 'draft_label', museumMatch: true }),
+        untrusted_content: true,
       });
     }
 
@@ -434,38 +524,17 @@ async function handleTool(request: Request, name: string, session: Session) {
       if (refused(requestedOutcome)) return requestedOutcome.refusal;
       const evidenceRefs = takeStringList(args.evidence_refs, 'evidence_refs', { max: MAX_EVIDENCE_IDS, label: 'evidence_refs' });
       if (refused(evidenceRefs)) return evidenceRefs.refusal;
+      // `title` is declared required of evidence and derived from the claim for a context
+      // claim, which declares `claim` required instead. Both are refused when absent by the
+      // catalogue-driven check at the top of this handler, so what is left here is only the
+      // derivation.
       const title = givenTitle || (claim.length > 80 ? `${claim.slice(0, 79)}…` : claim);
-      if (!title) return invalid(name === 'submit_evidence' ? 'title' : 'claim', 'A contribution needs a short title or claim.', 'Describe the material in one line.');
-
-      // The catalogue declares these required and the handler supplied them instead, so a
-      // contribution could be stored with the description a curator reviews left empty, or
-      // with "Community agent" standing in for a source nobody named. A declared-required
-      // field is refused when it is absent, the way `title` and `basis` already are. Each
-      // tool is judged on its own list: `description` is required of evidence, `source` of
-      // a context claim, and neither declares the other's field.
-      if (name === 'submit_evidence' && absent(args.description)) {
-        return invalid('description', 'A contribution needs a description of the material.',
-          'Say what the material shows, and anything known about when and where it was made.');
-      }
-      if (name === 'submit_context_claim' && absent(args.source)) {
-        return invalid('source', 'A context claim needs the source it is offered on the authority of.',
-          'Name the person, archive, or record this claim comes from.');
-      }
 
       // MCP-E1 — an unrecognised consent level used to be stored verbatim and then read
       // back as quotable by every consumer downstream. Consent is the one field on a
       // contribution that decides what may be published, so it is refused at the door
       // rather than coerced: silently rewriting someone's answer is its own failure.
-      //
-      // That covered a consent this system did not recognise. An absent one was still
-      // written on the contributor's behalf, as `private`, and answered `applied` — the
-      // same silent rewrite, reached by leaving the field out instead of getting it wrong.
-      // Both tools declare it required, and nobody but the contributor can choose it, so
-      // it is now refused rather than defaulted.
-      if (absent(args.consent)) {
-        return invalid('consent', 'A contribution needs the consent level its contributor chose.',
-          `Ask which of ${CONSENT_LEVELS.join(', ')} applies and send it. It is not defaulted, because nobody but the contributor can choose it.`);
-      }
+      // An absent one is refused by the required check, for the same reason.
       if (!isConsent(args.consent)) {
         return invalid('consent', `Consent must be one of ${CONSENT_LEVELS.join(', ')}.`, 'Ask the contributor which of the three levels applies, then resubmit.');
       }
@@ -525,6 +594,15 @@ async function handleTool(request: Request, name: string, session: Session) {
       if (refused(status$)) return status$.refusal;
       const status = status$.toLowerCase();
       const collection = await listObjects(museumId, 'agent');
+      // A status this collection does not use is the caller's mistake, and answering it
+      // with `{count:0}` made it indistinguishable from a filter that simply matched
+      // nothing (V10-5). The vocabulary is read off the collection rather than listed
+      // here, so a new record status cannot make this refuse a status that works.
+      const vocabulary = [...new Set(collection.map((item) => item.status))];
+      if (status && !vocabulary.some((known) => known.toLowerCase().includes(status))) {
+        return invalid('status', `No record status in this collection matches "${status$}".`,
+          `Filter by one of ${vocabulary.join(', ')}, or omit status to list every record.`);
+      }
       const objects = collection.filter((item) => !status || item.status.toLowerCase().includes(status));
       // One grouped count rather than one list per object (V9-6).
       const perObject = await countSubmissionsByObject(museumId);
@@ -540,8 +618,16 @@ async function handleTool(request: Request, name: string, session: Session) {
     case 'list_submissions': {
       const listStatus = takeText(args.status, 'status', { max: MAX_TEXT.term, label: 'A contribution status' });
       if (refused(listStatus)) return listStatus.refusal;
+      // The catalogue names five statuses. A sixth used to come back as an empty page,
+      // which reads as "no contributions are in that state" rather than "that state does
+      // not exist" (V10-5).
+      const canonicalStatus = SUBMISSION_STATUSES.find((known) => known === listStatus.toLowerCase());
+      if (listStatus && !canonicalStatus) {
+        return invalid('status', `No contribution status is called "${listStatus}".`,
+          `Filter by one of ${SUBMISSION_STATUSES.join(', ')}, or omit status to list every contribution.`);
+      }
       const rows = await listSubmissions(museumId, {
-        status: listStatus || undefined,
+        status: canonicalStatus || undefined,
         objectId: objectId || undefined,
       });
       // A triage list has to stay readable as a workspace fills up. Bodies are
@@ -574,6 +660,13 @@ async function handleTool(request: Request, name: string, session: Session) {
       const requested = citedIds(args);
       if (refused(requested)) return requested.refusal;
       const requestedEvidenceIds = requested;
+      // "Two or more" is what the catalogue says, and one id used to be answered with a
+      // comparison of a record against itself: no conflicts, no counterpart, and nothing
+      // in the response saying the comparison never happened (V10-6).
+      if (name === 'compare_evidence' && requestedEvidenceIds.length === 1) {
+        return invalid('evidence_ids', 'Comparing sources takes two or more evidence records, and this call sent one.',
+          'Add the record to compare it against — get_review_case lists the evidence ids on an object.');
+      }
       const selectedEvidence = name === 'compare_evidence'
         ? await getEvidenceByIds(museumId, requestedEvidenceIds, 'agent')
         : [];
@@ -876,10 +969,27 @@ async function handleTool(request: Request, name: string, session: Session) {
       // cannot be told apart from one that never existed.
       if (!row || access === 'absent') return invalid('asset_id', 'No asset with that id is available in this workspace.', 'Call list_object_assets to see what is available.');
       if (access === 'deny') {
+        /**
+         * The refusal names what actually blocked it (V10-4).
+         *
+         * Every denial here reported `consent_not_public`, including the common one:
+         * an asset a contributor had marked `public_attributed` that is still
+         * `restricted` because no curator has published it. An agent read the policy
+         * code, went to collect a consent it already had, and came back to the same
+         * refusal. Visibility and consent are separate gates in `assetAccess`, so they
+         * are separate answers here.
+         */
+        const consentBlocks = !isQuotable(row.consent as Consent);
         return Response.json({
-          outcome: 'denied', policy: 'consent_not_public', asset_id: row.id, risk: 'LOW',
-          reason: 'This material is held for curatorial review and cannot be released at this access level.',
-          recovery: 'Ask a curator to review the access question, or use publicly consented material.',
+          outcome: 'denied',
+          policy: consentBlocks ? 'consent_not_public' : 'visibility_restricted',
+          asset_id: row.id, risk: 'LOW',
+          reason: consentBlocks
+            ? `This material carries ${row.consent} consent, which does not permit release at this access level.`
+            : 'This material is held for curatorial review. Its consent permits publication, but no curator has published it yet.',
+          recovery: consentBlocks
+            ? 'Ask the contributor which consent level applies, or use publicly consented material.'
+            : 'Ask a curator to publish it, or use material that is already public on the record.',
         }, { status: 403 });
       }
       return Response.json({ ...publicAsset(row), object_id: row.object_id, submission_id: row.submission_id, untrusted_content: true });
