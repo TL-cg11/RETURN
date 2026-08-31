@@ -1717,13 +1717,18 @@ async function main() {
   const v9Uploads = await Promise.all(Array.from({ length: 130 }, (unused, index) => {
     const body = new FormData();
     body.append('file', new Blob([Uint8Array.from([0x25, 0x50, 0x44, 0x46])], { type: 'application/pdf' }), `rate-${index}.pdf`);
-    return req('/api/assets', { method: 'POST', body }).then((response) => response.status);
+    return req('/api/assets', { method: 'POST', body });
   }));
   check('an upload flood is throttled before it fills the store',
-    v9Uploads.includes(429), `statuses ${[...new Set(v9Uploads)].join(',')}`);
-  const v9Throttled = await req('/api/assets', { method: 'POST', body: (() => { const f = new FormData(); f.append('file', new Blob([Uint8Array.from([0x25, 0x50, 0x44, 0x46])], { type: 'application/pdf' }), 'over.pdf'); return f; })() });
+    v9Uploads.some((response) => response.status === 429),
+    `statuses ${[...new Set(v9Uploads.map((response) => response.status))].join(',')}`);
+  /* The refusal is read out of the burst rather than from a request sent after it (V10-6).
+     The burst takes a couple of seconds, so it can straddle a minute boundary; when it did,
+     the counter reset underneath the follow-up and a working limiter answered `applied` to
+     it. The same race this comment's neighbour describes, one request further along. */
+  const v9Throttled = v9Uploads.find((response) => response.status === 429) ?? { json: null };
   check('a throttled write answers in the four-field contract',
-    v9Throttled.status === 429 && v9Throttled.json?.policy === 'rate_limited' && !!v9Throttled.json?.reason && !!v9Throttled.json?.recovery,
+    v9Throttled.json?.policy === 'rate_limited' && !!v9Throttled.json?.reason && !!v9Throttled.json?.recovery,
     JSON.stringify(v9Throttled.json).slice(0, 130));
   check('and says nothing was written', /Nothing was written/.test(v9Throttled.json?.recovery ?? ''), v9Throttled.json?.recovery);
   }
