@@ -1088,9 +1088,13 @@ async function handleTool(request: Request, name: string, session: Session) {
       return Response.json({
         count: rows.length,
         uploads: rows.map(publicAsset),
+        // The empty state names the door too (V11-5). Saying only that files arrive
+        // "through the contribution form" told an agent where it could not go rather
+        // than where it could, and reading it as "a person has to do this by hand" is
+        // the fair reading of that sentence.
         note: rows.length > 0
           ? 'Pass these ids to attach_assets with the contribution they belong to.'
-          : 'Nothing is waiting. Files are uploaded through the contribution form, not through a tool.',
+          : 'Nothing is waiting. Upload with a multipart POST to /api/assets (field name "file"), then call this again to read the id.',
         untrusted_content: true,
       });
     }
