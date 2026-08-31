@@ -491,9 +491,16 @@ export async function getApproval(museumId: string, id: string) {
  */
 export async function workspaceSummary(museumId: string) {
   const db = await ensureDatabase(museumId);
-  const [objects, approvals, totals] = await Promise.all([
+  const [objects, approvals, referrals, totals] = await Promise.all([
     listObjects(museumId, 'curator'),
     listApprovals(museumId, 'pending'),
+    // Counted separately rather than folded into `pending_approvals` (V11-1). Both are
+    // work waiting on a person, but a label approval carries a snapshot to accept or
+    // edit and a referral carries a refused call to answer, so one number covering both
+    // would hide which kind is waiting. The summary used to count only approvals, and
+    // read `pending_approvals: 0` to an agent while the console said an action was
+    // waiting on the very same workspace.
+    countEscalations(museumId, 'open'),
     db.prepare(`SELECT COUNT(*) AS total,
         SUM(CASE WHEN status='received' THEN 1 ELSE 0 END) AS received,
         SUM(CASE WHEN consent='private' THEN 1 ELSE 0 END) AS private_consent
@@ -505,6 +512,7 @@ export async function workspaceSummary(museumId: string) {
     new_submissions: totals?.received ?? 0,
     total_submissions: totals?.total ?? 0,
     pending_approvals: approvals.length,
+    pending_referrals: referrals,
     consent_alerts: totals?.private_consent ?? 0,
   };
 }
@@ -535,6 +543,22 @@ export async function getAsset(museumId: string, id: string) {
 export async function listObjectAssets(museumId: string, objectId: string) {
   const db = await ensureDatabase(museumId);
   const result = await db.prepare(`SELECT ${ASSET_COLUMNS} FROM assets WHERE museum_id=? AND object_id=? ORDER BY sort_order, created_at`).bind(museumId, objectId).all<AssetRow>();
+  return result.results ?? [];
+}
+
+/**
+ * Uploads in this workspace that no contribution has claimed yet (V11-3).
+ *
+ * `attachAssetsToSubmission` only claims rows whose `submission_id IS NULL`, so this is
+ * exactly the set an attach call can still bind — an asset already on a contribution is
+ * settled and is read through `listSubmissionAssets` instead. Newest first, because the
+ * caller is looking for what it just uploaded.
+ */
+export async function listUnattachedAssets(museumId: string, limit = 20) {
+  const db = await ensureDatabase(museumId);
+  const result = await db.prepare(`SELECT ${ASSET_COLUMNS} FROM assets
+    WHERE museum_id=? AND submission_id IS NULL
+    ORDER BY created_at DESC LIMIT ?`).bind(museumId, limit).all<AssetRow>();
   return result.results ?? [];
 }
 

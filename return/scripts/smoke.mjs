@@ -88,6 +88,7 @@ const DECLARED = {
   get_asset_detail: { asset_id: 'AST-NONE' },
   list_objects: {},
   list_submissions: {},
+  list_my_uploads: {},
   submit_evidence: { object_id: 'moonbird-mask', title: 'A title', description: 'A description.', consent: 'public_anonymous' },
 };
 const declaredFor = (name, overrides) => ({ ...(DECLARED[name] ?? {}), ...overrides });
@@ -1536,6 +1537,76 @@ async function main() {
     if (carries !== (level === 'public_attributed')) v9Named.push(`${level} ${carries ? 'names' : 'withholds'} the contributor`);
   }
   check('only attributed consent lets the agent surface name the contributor', v9Named.length === 0, v9Named.join(' | '));
+
+  /* V11-1 — a referral the gateway escalated is work a person now holds, so every
+     surface has to agree it exists. The tool used to filter referrals by whether their
+     policy code started with `pending_`, which dropped the two an agent meets most:
+     `no_supporting_evidence` and `submitted_sole_authority`. The console listed the
+     referral and said an action was waiting; the tool said there was nothing. */
+  await setRole('curator');
+  const v11Denied = await tool('register_object', {
+    title: 'Referral visibility probe', accession: 'RT.2026.901',
+    period: 'A period', material: 'A material', origin: 'An origin', basis: 'Filed with no evidence.',
+  });
+  check('a refusal the gateway escalates hands back a referral id',
+    v11Denied.json?.policy === 'no_supporting_evidence' && !!v11Denied.json?.escalation_id,
+    JSON.stringify(v11Denied.json).slice(0, 120));
+  const v11Referral = v11Denied.json?.escalation_id;
+  const v11Pending = await tool('list_pending_approvals', {});
+  check('and that referral is listed as pending work',
+    (v11Pending.json?.referrals ?? []).some((row) => row.id === v11Referral),
+    JSON.stringify((v11Pending.json?.referrals ?? []).map((row) => row.policy)));
+  const v11Poll = await tool('check_approval', { approval_id: v11Referral });
+  check('the poller and the list agree about the same id',
+    v11Poll.json?.kind === 'referral' && v11Poll.json?.status === 'pending',
+    JSON.stringify(v11Poll.json).slice(0, 110));
+  const v11Summary = await tool('get_collection_summary', {});
+  check('and the summary counts it rather than reading zero',
+    (v11Summary.json?.pending_referrals ?? 0) >= 1, JSON.stringify({
+      approvals: v11Summary.json?.pending_approvals, referrals: v11Summary.json?.pending_referrals }));
+
+  /* V11-2 — the instruction names the parameter `check_approval` declares. It used to say
+     "poll with review_id" / "with proposal_id", and an agent following either verbatim was
+     refused: "check_approval does not take review_id." */
+  const v11Review = await tool('open_return_review', {
+    object_id: 'moonbird-mask', basis: 'Instruction probe.', evidence_ids: ['EV-068'],
+  });
+  check('a referral tells the agent to poll with the parameter that exists',
+    /approval_id/.test(v11Review.json?.next ?? '') && !/with review_id/.test(v11Review.json?.next ?? ''),
+    v11Review.json?.next);
+  const v11Followed = await tool('check_approval', { approval_id: v11Review.json?.review_id });
+  check('and following that instruction literally works',
+    v11Followed.json?.kind === 'referral', JSON.stringify(v11Followed.json).slice(0, 100));
+
+  /* V11-3 — `attach_assets` takes ids the upload route returned, and the form kept them
+     in its own state, so an agent held a tool whose required argument it could not
+     obtain: a contribution carrying a photograph could not be completed through tools. */
+  await setRole('community');
+  const v11Upload = await upload('image/png', 'agent-reachable.png');
+  const v11Mine = await tool('list_my_uploads', {});
+  check('an agent can find the file this session uploaded',
+    (v11Mine.json?.uploads ?? []).some((row) => row.id === v11Upload.json?.id),
+    JSON.stringify((v11Mine.json?.uploads ?? []).map((row) => row.id)).slice(0, 110));
+  check('and the listing carries ids and metadata, never file contents',
+    !v11Mine.text.includes('storage_key') && !/base64/i.test(v11Mine.text), 'upload listing leaked storage detail');
+  const v11Sub = await tool('submit_evidence', {
+    object_id: 'moonbird-mask', title: 'Agent-completed photo contribution',
+    description: 'Filed and attached entirely through the tool surface.',
+    source: 'Verification run', consent: 'public_attributed',
+  });
+  const v11Attach = await tool('attach_assets', {
+    submission_id: v11Sub.json?.submission_id, asset_ids: [v11Upload.json?.id],
+  });
+  check('the whole photograph contribution completes through tools alone',
+    v11Attach.json?.attached === 1 && v11Attach.json?.visibility === 'restricted',
+    JSON.stringify(v11Attach.json).slice(0, 120));
+  const v11After = await tool('list_my_uploads', {});
+  check('an attached file leaves the unattached list',
+    !(v11After.json?.uploads ?? []).some((row) => row.id === v11Upload.json?.id), 'still listed as unattached');
+  const v11Limit = await tool('list_my_uploads', { limit: '5' });
+  check('list_my_uploads refuses a limit sent as a string',
+    v11Limit.json?.outcome === 'invalid' && v11Limit.json?.field === 'limit', JSON.stringify(v11Limit.json).slice(0, 90));
+  await setRole('curator');
 
   /* V10-1 — consent to be named is a promise the record has to be able to keep.
      `public_attributed` stored with no name read back to the public as "Contributor
