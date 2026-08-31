@@ -2,7 +2,7 @@ import {
   attachAssetsToSubmission, countByStatus, countSubmissionsByObject, createEscalation, getApproval, getAsset, getEscalation, getEvidenceByIds, getSubmission,
   objectWithAccession,
   appendClarification, parseClarifications,
-  listActivity, listApprovals, listEscalations, listObjectAssets, listObjects, listSubmissionAssets, listSubmissions, recordActivity,
+  listActivity, listApprovals, listEscalations, listObjectAssets, listObjects, listSubmissionAssets, listSubmissions, listUnattachedAssets, recordActivity,
   setSubmissionStatus, SUBMISSION_STATUSES, workspaceSummary, type AssetRow, type SubmissionRow,
 } from '@/db/queries';
 import { APPROVAL_TTL_MS, ensureDatabase, sha256 } from '@/db/setup';
@@ -105,7 +105,7 @@ const SHARED_TOOLS = new Set(['list_object_assets', 'get_asset_detail']);
 
 const COMMUNITY_TOOLS = new Set([
   'search_collection', 'get_object_detail', 'get_provenance_timeline',
-  'submit_evidence', 'submit_context_claim', 'check_submission', 'attach_assets',
+  'submit_evidence', 'submit_context_claim', 'check_submission', 'attach_assets', 'list_my_uploads',
 ]);
 
 const KNOWN = new Set([...CURATOR_ONLY, ...COMMUNITY_TOOLS, ...SHARED_TOOLS]);
@@ -968,7 +968,10 @@ async function handleTool(request: Request, name: string, session: Session) {
         return Response.json({
           ...policy, review_id: reviewId, object_id: record.id, transfers_custody: false,
           note: 'This opens a human review process only. It does not transfer ownership or move the object.',
-          next: 'The referral is in the curator console. Poll check_approval with review_id, or continue other research.',
+          // Names the parameter `check_approval` declares, not the key this response
+          // carries it under (V11-2). An agent following the old sentence verbatim sent
+          // `review_id` and was refused: "check_approval does not take review_id."
+          next: 'The referral is in the curator console. Poll check_approval with approval_id set to this review_id, or continue other research.',
         });
       }
       return Response.json({
@@ -1032,7 +1035,22 @@ async function handleTool(request: Request, name: string, session: Session) {
         listEscalations(museumId, 'open', 50),
         countByStatus(museumId),
       ]);
-      const pendingReferrals = referrals.filter((row) => row.policy.startsWith('pending_'));
+      /**
+       * Every open referral, not the ones whose policy code happens to start with
+       * `pending_` (V11-1).
+       *
+       * A referral exists only because `evaluatePolicy` returned `escalate: true` — the
+       * gateway has already decided this one goes to a person, and `escalate()` writes no
+       * row for a refusal it did not escalate. Filtering by policy name here was the tool
+       * overruling that decision after the fact, and it dropped exactly the two codes an
+       * agent runs into most: `no_supporting_evidence` and `submitted_sole_authority`.
+       *
+       * The cost was a surface that disagreed with itself. The curator console listed the
+       * referral and said an action was waiting; `check_approval` answered `pending` for
+       * the same id; this tool said there was nothing, and the summary counted zero. An
+       * agent polling for its own escalated work was told it did not exist.
+       */
+      const pendingReferrals = referrals;
       return Response.json({
         count: rows.length + pendingReferrals.length,
         approvals: rows.map((row) => ({ id: row.id, kind: 'approval' as const, risk: row.risk, status: row.status, object_id: row.object_id, object_version: row.object_version })),
@@ -1045,6 +1063,38 @@ async function handleTool(request: Request, name: string, session: Session) {
     /* ------------- Assets (FR-W1) ------------- */
     // None of these carries file contents. Uploads go through `/api/assets`, which
     // creates the record first; tools only ever move ids (RETURN_PLAN 15.1).
+    /**
+     * What this session has uploaded and not yet attached (V11-3).
+     *
+     * `attach_assets` takes ids the upload route returned, and the form kept those ids in
+     * its own state — so an agent held a tool whose required argument it had no way to
+     * obtain, and a contribution carrying a photograph could not be completed through the
+     * tool surface at all. This closes that gap without moving bytes: ids and metadata
+     * only, and only for rows no contribution has claimed, which is exactly the set
+     * `attachAssetsToSubmission` can still bind.
+     *
+     * Scoped to the caller's own workspace like every other read. `assetAccess` is not
+     * consulted: an upload arrives `restricted`/`private` by design, so judging it here
+     * would hide every row from the session that just created it.
+     */
+    case 'list_my_uploads': {
+      const whole = (value: unknown) => typeof value === 'number' && Number.isInteger(value);
+      if (args.limit !== undefined && (!whole(args.limit) || (args.limit as number) < 1 || (args.limit as number) > 50)) {
+        return invalid('limit', 'A limit must be a whole number between 1 and 50, sent as a number rather than a string.',
+          'Ask for a page size in that range, or omit limit for the default of 20.');
+      }
+      const limit = args.limit === undefined ? 20 : args.limit as number;
+      const rows = await listUnattachedAssets(museumId, limit);
+      return Response.json({
+        count: rows.length,
+        uploads: rows.map(publicAsset),
+        note: rows.length > 0
+          ? 'Pass these ids to attach_assets with the contribution they belong to.'
+          : 'Nothing is waiting. Files are uploaded through the contribution form, not through a tool.',
+        untrusted_content: true,
+      });
+    }
+
     case 'list_object_assets': {
       const record = await objectRecord(museumId, objectId, role === 'curator' ? 'curator' : 'public');
       if (!record) return invalid(...NO_OBJECT);
@@ -1225,7 +1275,7 @@ async function handleTool(request: Request, name: string, session: Session) {
         return Response.json({
           ...policy, proposal_id: proposalId, proposed_object_id: proposedId, created: false,
           note: 'Nothing was added to the collection. A curator creates the record.',
-          next: 'A curator registers it from the console. Poll check_approval with proposal_id to see the referral close.',
+          next: 'A curator registers it from the console. Poll check_approval with approval_id set to this proposal_id to see the referral close.',
         });
       }
 
@@ -1239,7 +1289,9 @@ async function handleTool(request: Request, name: string, session: Session) {
           args: proposal,
           sourceRefs: registerCited,
           action: 'was denied a new collection record',
-          next: 'Cite a verified institutional record, or ask a curator to register it directly.',
+          // A refusal the gateway escalated is still work a person now holds, so the
+          // agent is told it can follow it rather than only how to avoid it (V11-2).
+          next: 'Cite a verified institutional record, or follow the referral: poll check_approval with approval_id set to this escalation_id.',
         }),
       });
     }

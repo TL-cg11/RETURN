@@ -10,8 +10,11 @@ All museums, objects, people, communities, images, and historical records in thi
 
 Two role-scoped tool surfaces operate on one shared record:
 
-- Community: 6 tools for collection discovery, provenance reading, evidence/context submission, and status checks.
-- Curator: 12 tools for triage, comparison, timeline building, label drafting, clarification, approval proposals, and stewardship review.
+- Community: 10 tools for collection discovery, provenance reading, evidence/context submission, upload discovery, attachment, and status checks.
+- Curator: 15 tools for triage, comparison, timeline building, label drafting, clarification, approval proposals, stewardship review, and record registration.
+
+Two of those are shared, so the catalogue holds 23 distinct tools. A tool is registered only
+for the role that may call it, and the server re-checks the role on every call.
 
 Tools never receive authority from text embedded in a submitted document. Server policy evaluates actor, workspace, action risk, evidence authority, consent, visibility, and assertion mode.
 
@@ -42,13 +45,14 @@ The project runs against a local D1 binding in development. Useful checks:
 
 ```bash
 npm run verify      # lint, typecheck, 161 unit tests, production build
-npm run test:smoke  # 391 end-to-end checks against a running server
+npm run test:smoke  # 414 end-to-end checks against a running server
 npm run eval:tools  # WebMCP acceptance gate: context cost and tool confusability
 ```
 
-`test:smoke` exercises every page route, all 22 WebMCP tools, the asset pipeline, the role
+`test:smoke` exercises every page route, all 23 WebMCP tools, the asset pipeline, the role
 boundary, the four policy outcomes, approve-with-edit, the contribution flow, and the fresh-workspace
-reset. Start `npm run dev` first, then point it at that server:
+reset. Adding `--limits` runs three further checks that flood the write ceiling (417 in total);
+they are held behind the flag because the flood slows everything after it. Start `npm run dev` first, then point it at that server:
 `npm run test:smoke -- http://localhost:3000`.
 
 ## Repository map
@@ -56,7 +60,7 @@ reset. Start `npm run dev` first, then point it at that server:
 - `RETURN_PLAN.md` — full product and technical specification
 - `return/` — deployable application
 - `return/lib/policy/` — pure policy gateway and 68 unit tests
-- `return/lib/webmcp/` — 22 role-scoped WebMCP tool definitions and 30 registration tests
+- `return/lib/webmcp/` — 23 role-scoped WebMCP tool definitions and 30 registration tests
 - `return/lib/assets/` — asset access rules and R2 storage
 - `return/lib/community/` — contribution field declarations, shared by the form, review, and validation
 - `return/db/` — D1 schema, per-workspace seeding, and the query layer
@@ -103,7 +107,7 @@ npx wrangler d1 execute return-museum --remote --file=./drizzle/0000_return_foun
 ```
 
 Then `0001_domain_records.sql`, `0002_governance_audit.sql`, `0003_consent_three_levels.sql`,
-`0004_assets.sql`, and `0005_contribution_detail.sql`.
+`0004_assets.sql`, `0005_contribution_detail.sql`, and `0006_clarifications.sql`.
 
 The SQL files are the reference schema. `ensureDatabase()` in `db/setup.ts` additionally
 creates anything missing and backfills legacy columns on every boot, so a database that
@@ -132,7 +136,7 @@ workspace and leaves the existing ones untouched.
 - RE:TURN does not determine illicit removal, transfer ownership, or execute physical return.
 - The demo uses lightweight refresh behavior rather than a production event bus.
 - WebMCP tools register only where the browser exposes `document.modelContext`. Where it is absent the console says so, and the same tools stay reachable over `/api/tools/`.
-- File contribution accepts real uploads (images, PDFs, audio) stored in Cloudflare R2. Uploads are `restricted` and `private` until a curator opens them, and WebMCP tools still receive `asset_ids` rather than binary.
+- File contribution accepts real uploads (images, PDFs, audio) stored in Cloudflare R2. Uploads are `restricted` and `private` until a curator opens them. Binaries never cross the tool surface: files enter through the upload route, and an agent reads back ids and metadata with `list_my_uploads` before binding them with `attach_assets`.
 
 ## License
 

@@ -27,9 +27,12 @@ function withModelContext(run: (registered: Registered[], unregistered: string[]
   });
 }
 
-test('community surface registers exactly the nine community tools', () => withModelContext((registered) => {
+test('community surface registers exactly the ten community tools', () => withModelContext((registered) => {
   registerWebMcpTools('community');
-  assert.equal(registered.length, 9);
+  // The literal is deliberate: WEBMCP_TOOLS 5 ties surface size to selection accuracy,
+  // so adding a tool should be a decision someone takes on purpose, not a number that
+  // drifts. `list_my_uploads` (V11-3) is the tenth.
+  assert.equal(registered.length, 10);
   assert.deepEqual(registered.map((tool) => tool.name).sort(), communityTools.map((tool) => tool.name).sort());
 }));
 
