@@ -26,6 +26,11 @@ a { color:inherit; text-decoration:none; }
 .site-header nav { display:flex; gap:2rem; align-items:center; font-size:.83rem; }
 .site-header nav>a:not(.curator-link) { color:var(--muted); }
 .curator-link { border-bottom:1px solid var(--ink); padding-bottom:3px; }
+/* V11-7 — says what this page registered. Quiet on purpose: it is a statement of fact
+   for whoever is reading, not a call to action competing with the navigation. */
+.mcp-badge { display:inline-flex; align-items:center; gap:.4rem; font-size:.72rem; letter-spacing:.04em; color:var(--moss); border:1px solid var(--line); padding:.3rem .55rem; cursor:default; }
+.mcp-badge.off { color:#8a8c86; }
+.mcp-badge span { font-size:.8rem; }
 
 .hero { min-height:calc(100vh - 76px); display:grid; grid-template-columns:minmax(0,1fr) minmax(440px,.82fr); border-bottom:1px solid var(--line); }
 .hero-copy { padding:clamp(4rem,9vw,9rem) 6vw 5rem 4.5vw; display:flex; flex-direction:column; justify-content:center; }

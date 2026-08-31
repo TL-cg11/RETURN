@@ -18,6 +18,38 @@ for the role that may call it, and the server re-checks the role on every call.
 
 Tools never receive authority from text embedded in a submitted document. Server policy evaluates actor, workspace, action risk, evidence authority, consent, visibility, and assertion mode.
 
+### How the tools are registered
+
+The implementation is three files. `lib/webmcp/tools.ts` declares the catalogue — what each
+tool is and what it accepts. `lib/webmcp/register.ts` hands those declarations to the browser.
+`app/api/tools/[name]/route.ts` is what actually runs, behind the policy gateway.
+
+```ts
+// lib/webmcp/register.ts — one registration per tool the session's role may call
+context.registerTool({
+  name: tool.name,
+  description: tool.description,
+  inputSchema: {
+    type: 'object',
+    properties: tool.properties ?? {},
+    required: tool.required ?? [],
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: tool.readOnly, untrustedContentHint: tool.untrusted ?? false },
+  signal,
+  execute: async (args) => (await fetch(`/api/tools/${tool.name}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(args ?? {}),
+  })).json(),
+});
+```
+
+`context` is `document.modelContext`, falling back to the deprecated `navigator.modelContext`
+where a browser still exposes only that one. `additionalProperties: false` makes the published
+schema say exactly what the server enforces, and `execute` carries arguments to the same route
+a non-WebMCP caller would POST to — so the tool surface and the HTTP surface cannot drift.
+
 ## Product flow
 
 1. Explore the eight-object fictional collection and open the Moonbird Mask.
