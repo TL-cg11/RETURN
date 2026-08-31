@@ -1,56 +1,125 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
+import { FormEvent, useMemo, useState } from 'react';
 import type { CollectionObject } from '@/lib/domain/types';
-
-const steps = ['Object', 'Evidence', 'Context', 'Consent', 'Review'];
+import {
+  CONTRIBUTION_KINDS, buildSteps, describeKinds, fieldsFor, missingFields, summariseDetail,
+  type ContributionKind, type KindDetail,
+} from '@/lib/community/contribution';
+import { MAX_ASSETS_PER_CONTRIBUTION } from '@/lib/assets/access';
+import { MAX_TEXT } from '@/lib/domain/types';
+import { LimitedInput, LimitedTextarea } from '@/components/shared/limited-field';
 
 const CONSENT_OPTIONS = [
   ['public_attributed', 'Public, with my name', 'The museum may quote and display this with attribution.'],
   ['public_anonymous', 'Public, without my name', 'The museum may quote and display it without identifying me.'],
-  ['research_only', 'Research only', 'Curators may study it, but cannot quote or display it publicly.'],
-  ['private', 'Private', 'Only authorised curators may view it.'],
+  ['private', 'Private', 'Authorised curators may study it, but it cannot be quoted or displayed publicly.'],
 ] as const;
 
-type PickerObject = Pick<CollectionObject, 'id' | 'title' | 'accession' | 'date' | 'status' | 'tone'>;
+const KIND_MARK: Record<ContributionKind, string> = {
+  Photograph: '▧', Document: '≡', 'Oral history': '◉', 'Object information': '◇',
+};
 
-export function ContributionForm({ objectId, objects }: { objectId: string; objects: PickerObject[] }) {
+type PickerObject = Pick<CollectionObject, 'id' | 'title' | 'accession' | 'date' | 'status' | 'tone'>;
+type Attachment = { id: string; fileName: string; kind: string; forKind: ContributionKind; alt: string };
+
+export function ContributionForm({ objectId, objects, fromObject }: { objectId: string; objects: PickerObject[]; fromObject: boolean }) {
   const [step, setStep] = useState(0);
   const [pending, setPending] = useState(false);
+  const [uploading, setUploading] = useState('');
   const [error, setError] = useState('');
   const [picking, setPicking] = useState(false);
-  const [form, setForm] = useState({
-    objectId,
-    kind: 'Photograph',
-    title: '1959 Aru village photograph',
-    description: 'The reverse of the photograph reads “Moonbird dancers, first rains, 1959.”',
-    source: 'Family archive of Ena Varo',
-    date: 'August 1959',
-    place: 'Aru village',
-    consent: 'public_attributed',
-    requestedOutcome: 'Correct the public label',
-  });
+  const [filter, setFilter] = useState('');
+  const [selectedId, setSelectedId] = useState(objectId);
+  const [kinds, setKinds] = useState<ContributionKind[]>(['Photograph']);
+  const [values, setValues] = useState<Record<string, Record<string, string>>>({});
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [title, setTitle] = useState('');
+  const [source, setSource] = useState('');
+  const [consent, setConsent] = useState('public_attributed');
+  const [requestedOutcome, setRequestedOutcome] = useState('Add context to this record');
 
-  const selected = objects.find((item) => item.id === form.objectId) ?? objects[0];
+  // FR-C2: the object step exists only when the contributor did not arrive from a record.
+  const steps = useMemo(() => buildSteps(kinds, { needsObjectStep: !fromObject }), [kinds, fromObject]);
+  const current = steps[Math.min(step, steps.length - 1)];
+  const selected = objects.find((item) => item.id === selectedId) ?? objects[0];
+  const details: KindDetail[] = kinds.map((kind) => ({ kind, values: values[kind] ?? {} }));
+
   if (!selected) return null;
-  const field = (key: string, value: string) => setForm((current) => ({ ...current, [key]: value }));
+
+  const setValue = (kind: ContributionKind, name: string, value: string) =>
+    setValues((now) => ({ ...now, [kind]: { ...(now[kind] ?? {}), [name]: value } }));
+
+  const toggleKind = (kind: ContributionKind) => {
+    setError('');
+    setKinds((now) => (now.includes(kind) ? now.filter((item) => item !== kind) : [...now, kind]));
+  };
+
+  async function upload(kind: ContributionKind, files: FileList | null) {
+    if (!files?.length) return;
+    if (attachments.length + files.length > MAX_ASSETS_PER_CONTRIBUTION) {
+      setError(`A contribution may carry at most ${MAX_ASSETS_PER_CONTRIBUTION} files.`);
+      return;
+    }
+    setError('');
+    setUploading(kind);
+    for (const file of Array.from(files)) {
+      const body = new FormData();
+      body.append('file', file);
+      const response = await fetch('/api/assets', { method: 'POST', body });
+      const data = await response.json() as { id?: string; kind?: string; reason?: string; recovery?: string };
+      // Both halves of the refusal. The reason names what is wrong and the recovery says
+      // what to do about it, and this used to print only the first — so a contributor
+      // whose file name ran over read "A file name is at most 120 characters, and this
+      // one is 204." without the sentence telling them to rename it (V7-11).
+      if (!response.ok || !data.id) {
+        setError([data.reason, data.recovery].filter(Boolean).join(' ') || 'That file could not be uploaded.');
+        break;
+      }
+      setAttachments((now) => [...now, { id: data.id!, fileName: file.name, kind: data.kind ?? 'file', forKind: kind, alt: '' }]);
+    }
+    setUploading('');
+  }
+
+  function advance() {
+    if (current.id === 'kinds') {
+      if (kinds.length === 0) { setError('Choose at least one kind of material.'); return false; }
+      if (!title.trim()) { setError('A contribution needs a short title.'); return false; }
+    }
+    if (current.id === 'consent' && consent === 'public_attributed' && !source.trim()) {
+      setError('Choosing “Public, with my name” means the record carries a name. Add the name to show, or choose “Public, without my name”.');
+      return false;
+    }
+    if (current.id.startsWith('detail:')) {
+      const kind = (current as { kind: ContributionKind }).kind;
+      const missing = missingFields([{ kind, values: values[kind] ?? {} }]);
+      if (missing.length > 0) { setError(`${missing[0].label} is required.`); return false; }
+    }
+    setError('');
+    return true;
+  }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (step < 4) { setStep(step + 1); return; }
-    if (!form.title.trim()) { setError('A contribution needs a short title.'); setStep(1); return; }
+    if (current.id !== 'review') { if (advance()) setStep(step + 1); return; }
 
     setPending(true);
     setError('');
     const response = await fetch('/api/community/evidence', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(form),
+      body: JSON.stringify({
+        objectId: selected.id, kinds, details, title, source, consent, requestedOutcome,
+        assetIds: attachments.map((item) => item.id),
+        // Alt text is collected here rather than on the upload route, because the
+        // contributor writes it after seeing what uploaded (RETURN_PLAN §20.4).
+        assetAlts: Object.fromEntries(attachments.filter((item) => item.alt.trim()).map((item) => [item.id, item.alt.trim()])),
+      }),
     });
-    const data = await response.json() as { id?: string; reason?: string };
+    const data = await response.json() as { id?: string; reason?: string; recovery?: string };
     if (!response.ok || !data.id) {
       setPending(false);
-      setError(data.reason ?? 'Could not submit this contribution.');
+      setError([data.reason, data.recovery].filter(Boolean).join(' ') || 'Could not submit this contribution.');
       return;
     }
     // Stay disabled through the navigation. Re-enabling here let a second click
@@ -59,28 +128,40 @@ export function ContributionForm({ objectId, objects }: { objectId: string; obje
     // A full page load rather than router.push, for the reason recorded in
     // components/shared/nav-link.tsx: vinext's client navigation does not run in
     // the production build, so router.push left the contributor on the form with
-    // no sign anything had happened.
-    location.href = `/submissions/${data.id}`;
+    // no sign anything had happened. `assign` rather than setting `href` because
+    // the compiler's immutability rule reads the assignment as mutating an outer
+    // binding; the two are equivalent navigations.
+    window.location.assign(`/submissions/${data.id}`);
   }
+
+  const visible = objects.filter((item) =>
+    !filter.trim() || `${item.title} ${item.accession}`.toLowerCase().includes(filter.trim().toLowerCase()));
 
   return (
     <form className="contribution-form" onSubmit={submit}>
       <aside>
         <p className="eyebrow">Contribution</p>
         <ol>
-          {steps.map((label, index) => (
-            <li className={index === step ? 'active' : index < step ? 'done' : ''} key={label}>
-              <span>{index < step ? '✓' : index + 1}</span>{label}
+          {steps.map((entry, index) => (
+            <li className={index === step ? 'active' : index < step ? 'done' : ''} key={entry.id}>
+              <span>{index < step ? '✓' : index + 1}</span>{entry.label}
             </li>
           ))}
         </ol>
-        <p className="privacy-note">Your draft stays in this browser until you submit it. You control how the museum may use your contribution.</p>
+        {/* This used to open with "Your draft stays in this browser until you submit it",
+            which was not true: nothing is written to storage, and a reload returns to step
+            one with every field empty (F4-2). The sentence was doing real work — it told a
+            contributor they could leave and come back — so a false version of it is worse
+            than none. What remains is the part that is true and is the point: the
+            contributor decides how the museum may use what they send. */}
+        <p className="privacy-note">You control how the museum may use your contribution.</p>
       </aside>
 
       <section className="form-stage">
-        {step === 0 && (
+        <p className="form-count">Step {step + 1} of {steps.length}</p>
+
+        {current.id === 'object' && (
           <>
-            <p className="form-count">Step 1 of 5</p>
             <h1>Which object is this about?</h1>
             <div className="selected-object">
               <span className={`object-thumbnail ${selected.tone}`} aria-hidden="true"><i /></span>
@@ -88,77 +169,166 @@ export function ContributionForm({ objectId, objects }: { objectId: string; obje
               <button type="button" onClick={() => setPicking(!picking)}>{picking ? 'Close' : 'Change'}</button>
             </div>
             {picking && (
-              <ul className="object-picker">
-                {objects.map((item) => (
-                  <li key={item.id}>
-                    <button type="button" className={item.id === form.objectId ? 'selected' : ''} onClick={() => { field('objectId', item.id); setPicking(false); }}>
-                      <strong>{item.title}</strong><small>{item.accession} · {item.date}</small>
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              <>
+                <label className="picker-filter">Find an object
+                  <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Title or accession number" />
+                </label>
+                <ul className="object-picker">
+                  {visible.map((item) => (
+                    <li key={item.id}>
+                      <button type="button" className={item.id === selectedId ? 'selected' : ''} onClick={() => { setSelectedId(item.id); setPicking(false); }}>
+                        <strong>{item.title}</strong><small>{item.accession} · {item.date}</small>
+                      </button>
+                    </li>
+                  ))}
+                  {visible.length === 0 && <li><p className="form-help">No object matches that.</p></li>}
+                </ul>
+              </>
             )}
             <p className="form-help">We’ll connect your contribution to this object’s record and open questions.</p>
           </>
         )}
 
-        {step === 1 && (
+        {current.id === 'kinds' && (
           <>
-            <p className="form-count">Step 2 of 5</p>
             <h1>What are you sharing?</h1>
+            <p className="form-help">Choose everything that applies. We’ll ask about each one in turn.</p>
             <div className="choice-grid">
-              {['Photograph', 'Document', 'Oral history', 'Object information'].map((kind) => (
-                <button type="button" className={form.kind === kind ? 'selected' : ''} onClick={() => field('kind', kind)} key={kind}>
-                  <span>{kind === 'Photograph' ? '▧' : kind === 'Document' ? '≡' : kind === 'Oral history' ? '◉' : '◇'}</span>{kind}
+              {CONTRIBUTION_KINDS.map((kind) => (
+                <button type="button" aria-pressed={kinds.includes(kind)} className={kinds.includes(kind) ? 'selected' : ''} onClick={() => toggleKind(kind)} key={kind}>
+                  <span aria-hidden="true">{KIND_MARK[kind]}</span>{kind}
+                  {kinds.includes(kind) && <b className="choice-check" aria-hidden="true">✓</b>}
                 </button>
               ))}
             </div>
-            <label>Short title<input value={form.title} onChange={(event) => field('title', event.target.value)} required /></label>
+            {/* Every ceiling in this form is the one the route checks against, so nothing
+                a contributor can type here is refused five steps later (V7-5). */}
+            {/* Marked the way the detail steps mark theirs (V10-3). The browser already
+                refuses to submit without it, but that only says so after the attempt;
+                every other required field on this form says so before. */}
+            <label><span className="field-name">Short title<b aria-hidden="true"> *</b></span>
+              <LimitedInput value={title} max={MAX_TEXT.title} onValueChange={setTitle} placeholder="1959 Aru village photograph" required /></label>
+            <label>Where did this come from?<LimitedInput value={source} max={MAX_TEXT.source} onValueChange={setSource} placeholder="Family archive of Ena Varo" /></label>
           </>
         )}
 
-        {step === 2 && (
-          <>
-            <p className="form-count">Step 3 of 5</p>
-            <h1>Add the context you know.</h1>
-            <label>Description<textarea rows={5} value={form.description} onChange={(event) => field('description', event.target.value)} /></label>
-            <div className="field-pair">
-              <label>Date<input value={form.date} onChange={(event) => field('date', event.target.value)} /></label>
-              <label>Place<input value={form.place} onChange={(event) => field('place', event.target.value)} /></label>
-            </div>
-            <label>Where did this come from?<input value={form.source} onChange={(event) => field('source', event.target.value)} /></label>
-          </>
-        )}
+        {current.id.startsWith('detail:') && (() => {
+          const kind = (current as { kind: ContributionKind }).kind;
+          const mine = attachments.filter((item) => item.forKind === kind);
+          return (
+            <>
+              <h1>{kind}</h1>
+              {fieldsFor(kind).map((field) => field.type === 'files' ? (
+                <div className="attachment-field" key={field.name}>
+                  <p className="attachment-label">{field.label}</p>
+                  {field.help && <p className="form-help">{field.help}</p>}
+                  <input
+                    type="file" multiple aria-label={field.label}
+                    accept="image/jpeg,image/png,image/webp,image/gif,application/pdf,audio/mpeg,audio/wav,audio/mp4"
+                    onChange={(event) => { void upload(kind, event.target.files); event.target.value = ''; }}
+                  />
+                  {uploading === kind && <p className="form-help">Uploading…</p>}
+                  {mine.length > 0 && (
+                    <ul className="attachment-list">
+                      {mine.map((item) => (
+                        <li key={item.id}>
+                          <div className="attachment-row">
+                            <span>{item.fileName}</span>
+                            <button type="button" onClick={() => setAttachments((now) => now.filter((entry) => entry.id !== item.id))}>Remove</button>
+                          </div>
+                          {item.kind === 'image' && (
+                            <label className="attachment-alt">
+                              Describe this image for someone who cannot see it
+                              <LimitedInput
+                                value={item.alt} max={MAX_TEXT.altText}
+                                placeholder="A carved mask held by two people outside a meeting house"
+                                onValueChange={(value) => setAttachments((now) => now.map((entry) => entry.id === item.id ? { ...entry, alt: value } : entry))}
+                              />
+                            </label>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <p className="form-help">Uploads stay private to the curatorial team until a curator publishes them.</p>
+                </div>
+              ) : field.type === 'textarea' ? (
+                <label key={field.name}><span className="field-name">{field.label}{field.required && <b aria-hidden="true"> *</b>}</span>
+                  <LimitedTextarea
+                    rows={4} placeholder={field.placeholder} max={field.max}
+                    value={values[kind]?.[field.name] ?? ''} onValueChange={(value) => setValue(kind, field.name, value)}
+                  />
+                  {field.help && <small className="field-help">{field.help}</small>}
+                </label>
+              ) : (
+                <label key={field.name}><span className="field-name">{field.label}{field.required && <b aria-hidden="true"> *</b>}</span>
+                  <LimitedInput
+                    placeholder={field.placeholder} max={field.max}
+                    value={values[kind]?.[field.name] ?? ''} onValueChange={(value) => setValue(kind, field.name, value)}
+                  />
+                  {field.help && <small className="field-help">{field.help}</small>}
+                </label>
+              ))}
+            </>
+          );
+        })()}
 
-        {step === 3 && (
+        {current.id === 'consent' && (
           <>
-            <p className="form-count">Step 4 of 5</p>
             <h1>How may the museum use it?</h1>
             <fieldset className="consent-options">
               <legend>Choose one permission</legend>
-              {CONSENT_OPTIONS.map(([value, title, detail]) => (
+              {CONSENT_OPTIONS.map(([value, label, detail]) => (
                 <label key={value}>
-                  <input type="radio" name="consent" checked={form.consent === value} onChange={() => field('consent', value)} />
-                  <span><strong>{title}</strong><small>{detail}</small></span>
+                  <input type="radio" name="consent" checked={consent === value} onChange={() => setConsent(value)} />
+                  <span><strong>{label}</strong><small>{detail}</small></span>
                 </label>
               ))}
             </fieldset>
+            {/* V10-1 — "with my name" is a promise the record has to be able to keep.
+                The byline reads `source`, which until now was only asked for in the first
+                step as "Where did this come from?" — a question about the material, not
+                about the contributor. Left blank, the record answered "Contributor chose
+                not to be named" to someone who had chosen the opposite. Asking here, where
+                the choice is made, is the only place the two can be held together. */}
+            {consent === 'public_attributed' && (
+              <label><span className="field-name">The name to show on the record<b aria-hidden="true"> *</b></span>
+                <LimitedInput value={source} max={MAX_TEXT.source} onValueChange={setSource} required />
+              </label>
+            )}
+            <label>What would you like to happen?<LimitedInput value={requestedOutcome} max={MAX_TEXT.requestedOutcome} onValueChange={setRequestedOutcome} /></label>
           </>
         )}
 
-        {step === 4 && (
+        {current.id === 'review' && (
           <>
-            <p className="form-count">Step 5 of 5</p>
             <h1>Review your contribution.</h1>
             <dl className="review-list">
-              <div><dt>Object</dt><dd>{selected.title}</dd></div>
-              <div><dt>Evidence</dt><dd>{form.kind} · {form.title}</dd></div>
-              <div><dt>Context</dt><dd>{form.date} · {form.place}<br />{form.source}</dd></div>
-              <div><dt>Permission</dt><dd>{form.consent.replaceAll('_', ' ')}</dd></div>
+              <div><dt>Object</dt><dd>{selected.title}<small>{selected.accession}</small></dd></div>
+              <div><dt>Title</dt><dd className="prose">{title || <em>Not given</em>}</dd></div>
+              <div><dt>Material</dt><dd className="prose">{describeKinds(kinds)}</dd></div>
+              {details.map((detail) => {
+                const lines = summariseDetail(detail);
+                const files = attachments.filter((item) => item.forKind === detail.kind);
+                return (
+                  <div key={detail.kind}>
+                    <dt>{detail.kind}</dt>
+                    <dd>
+                      {files.length > 0 && <strong>{files.length} file{files.length === 1 ? '' : 's'} attached</strong>}
+                      {files.map((file) => <small key={file.id}>{file.fileName}{file.alt ? ` — ${file.alt}` : file.kind === 'image' ? ' — no description given' : ''}</small>)}
+                      {lines.map((line) => <small key={line}>{line}</small>)}
+                      {lines.length === 0 && files.length === 0 && <em>Nothing added</em>}
+                    </dd>
+                  </div>
+                );
+              })}
+              <div><dt>Source</dt><dd>{source || <em>Not given</em>}</dd></div>
+              <div><dt>Permission</dt><dd>{consent.replaceAll('_', ' ')}</dd></div>
+              <div><dt>Requested</dt><dd>{requestedOutcome}</dd></div>
             </dl>
             <div className="submission-notice">
               <b>What happens next</b>
-              <p>Your contribution will enter the curator inbox as <strong>submitted</strong>. It can inform research, but it cannot change the official record by itself.</p>
+              <p>Your contribution will enter the curator inbox as <strong>submitted</strong>. It can inform research, but it cannot change the official record by itself. Any files you attached stay private to the curatorial team until a curator publishes them.</p>
             </div>
           </>
         )}
@@ -166,9 +336,9 @@ export function ContributionForm({ objectId, objects }: { objectId: string; obje
         {error && <p className="clarify-result" role="alert">{error}</p>}
 
         <div className="form-actions">
-          {step > 0 && <button type="button" className="secondary-action" onClick={() => setStep(step - 1)}>Back</button>}
-          <button className="primary-action" disabled={pending}>
-            {step === 4 ? (pending ? 'Submitting…' : 'Submit contribution') : 'Continue'} <span aria-hidden="true">→</span>
+          {step > 0 && <button type="button" className="secondary-action" onClick={() => { setError(''); setStep(step - 1); }}>Back</button>}
+          <button className="primary-action" disabled={pending || !!uploading}>
+            {current.id === 'review' ? (pending ? 'Submitting…' : 'Submit contribution') : 'Continue'} <span aria-hidden="true">→</span>
           </button>
         </div>
       </section>

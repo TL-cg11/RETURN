@@ -5,7 +5,7 @@ export type SubmissionRow = {
   id: string; museum_id: string; object_id: string; kind: string; title: string;
   description: string; source: string; consent: string; requested_outcome: string;
   contributor_name: string | null; contributor_role: string | null; evidence_refs: string;
-  status: string; created_at: number; updated_at: number;
+  status: string; details: string; asset_ids: string; clarifications: string; created_at: number; updated_at: number;
 };
 export type ActivityRow = {
   id: string; actor: string; action: string; detail: string; created_at: number;
@@ -17,6 +17,12 @@ export type ApprovalRow = {
   object_version: number; justification: string; refs_authority: string; refs_consent: string;
   status: string; resolution: string | null; verdict: string | null; edited_body: string | null; edit_reason: string | null;
   created_at: number; expires_at: number; resolved_at: number | null;
+};
+
+export type LabelPublicationRow = {
+  id: string; museum_id: string; object_id: string; title: string; body: string;
+  assertions: string; evidence_refs: string; revision_number: number; approved_by: string;
+  published_at: number; superseded_at: number | null;
 };
 
 export type EscalationRow = {
@@ -115,14 +121,43 @@ export async function listObjects(museumId: string, access: ObjectAccess = 'publ
   return (result.results ?? []).map(mapObject);
 }
 
+/**
+ * Search the collection.
+ *
+ * The match runs in JavaScript rather than in SQL, which is the opposite of how this
+ * file treats every other filter — and deliberately so. D1 caps the length of a `LIKE`
+ * pattern far below SQLite's own limit, so `LIKE '%' || query || '%'` threw for any
+ * query of about fifty characters and the tool answered with a bare 500 (EA-1). It is
+ * the same defect FR2-X1 removed from the approval query; this was the last `LIKE` left.
+ *
+ * Moving the match out of SQL is safe here because **search is not a safety filter**.
+ * Visibility still runs in SQL, so this can only ever narrow a set the database already
+ * judged the caller may see; a bug in the matching below can hide a record from a search,
+ * never reveal one. A collection is small and already bounded per workspace.
+ */
 export async function searchObjects(museumId: string, query = '', access: ObjectAccess = 'public') {
   const db = await ensureDatabase(museumId);
+  const result = await db.prepare(`${OBJECT_SELECT} WHERE o.museum_id=? AND ${objectVisibility(access)} ORDER BY o.accession_number`)
+    .bind(museumId).all<ObjectRow>();
+  const rows = (result.results ?? []).map(mapObject);
   const trimmed = query.trim().toLowerCase();
-  const searchable = "lower(o.title || ' ' || o.material || ' ' || o.origin || ' ' || o.period || ' ' || o.record_status || ' ' || coalesce(o.provenance_gap,'')) LIKE ?";
-  const sql = `${OBJECT_SELECT} WHERE o.museum_id=? AND ${objectVisibility(access)}${trimmed ? ` AND ${searchable}` : ''} ORDER BY o.accession_number`;
-  const values = trimmed ? [museumId, `%${trimmed}%`] : [museumId];
-  const result = await db.prepare(sql).bind(...values).all<ObjectRow>();
-  return (result.results ?? []).map(mapObject);
+  if (!trimmed) return rows;
+  const haystack = (row: ReturnType<typeof mapObject>) =>
+    [row.title, row.material, row.region, row.date, row.status, row.gap ?? ''].join(' ').toLowerCase();
+  return rows.filter((row) => haystack(row).includes(trimmed));
+}
+
+/**
+ * The record already using an accession number, if any.
+ *
+ * `createObject` has always refused a clash, and the registration form asks first. The
+ * agent tool did not, so a proposal carrying a taken accession reached the curator queue
+ * and failed only when a human tried to act on it (EA-3).
+ */
+export async function objectWithAccession(museumId: string, accession: string) {
+  const db = await ensureDatabase(museumId);
+  return db.prepare('SELECT id,title FROM objects WHERE museum_id=? AND accession_number=? LIMIT 1')
+    .bind(museumId, accession).first<{ id: string; title: string }>();
 }
 
 export async function getObject(museumId: string, id: string, access: ObjectAccess = 'public') {
@@ -130,6 +165,46 @@ export async function getObject(museumId: string, id: string, access: ObjectAcce
   const row = await db.prepare(`${OBJECT_SELECT} WHERE o.museum_id=? AND o.id=? AND ${objectVisibility(access)} LIMIT 1`)
     .bind(museumId, id).first<ObjectRow>();
   return row ? mapObject(row) : null;
+}
+
+/** Official publication history for the public revision comparison. */
+export async function listLabelPublications(museumId: string, objectId: string) {
+  const db = await ensureDatabase(museumId);
+  const result = await db.prepare('SELECT * FROM label_publications WHERE museum_id=? AND object_id=? ORDER BY revision_number DESC')
+    .bind(museumId, objectId).all<LabelPublicationRow>();
+  return result.results ?? [];
+}
+
+/** Evidence ids explicitly attached to a contribution, including legacy audit links. */
+export async function listSubmissionEvidenceIds(museumId: string, submissionId: string) {
+  const db = await ensureDatabase(museumId);
+  const submission = await getSubmission(museumId, submissionId);
+  if (!submission) return [];
+  // Seeded contributions carry a per-workspace suffix (`SUB-1042-${museumId}`) while the
+  // seeded activity row holds the bare id. That is an exact string relation, so it is
+  // written as one. It used to be a LIKE pattern built from the `result` column, which
+  // D1 rejects outright once the pattern grows past its limit — and it always does on a
+  // workspace whose id is a UUID, which is every workspace except the original demo one.
+  const activity = await db.prepare("SELECT target FROM activity WHERE museum_id=? AND (result=? OR ?=result || '-' || ?) AND target<>''")
+    .bind(museumId, submissionId, submissionId, museumId).all<{ target: string }>();
+  return [...new Set([...parseArray(submission.evidence_refs), ...(activity.results ?? []).map((row) => row.target)])];
+}
+
+/** The exact published revision that cites evidence connected to one contribution. */
+export async function getSubmissionPublicationOutcome(museumId: string, submissionId: string) {
+  const submission = await getSubmission(museumId, submissionId);
+  if (!submission) return null;
+  const [evidenceIds, publications] = await Promise.all([
+    listSubmissionEvidenceIds(museumId, submissionId),
+    listLabelPublications(museumId, submission.object_id),
+  ]);
+  const linked = new Set(evidenceIds);
+  const publication = publications.find((item) => parseArray(item.evidence_refs).some((id) => linked.has(id)));
+  if (!publication) return null;
+  return {
+    publication,
+    previous: publications.find((item) => item.revision_number === publication.revision_number - 1) ?? null,
+  };
 }
 
 export async function listProvenanceEvents(museumId: string, objectId: string, access: EvidenceAccess = 'public') {
@@ -161,7 +236,7 @@ function evidenceVisibility(access: EvidenceAccess) {
 }
 
 function mapEvidence(row: EvidenceRow, access: EvidenceAccess): EvidenceRecord {
-  const withheld = access !== 'curator' && (row.visibility !== 'public' || row.consent === 'private' || row.consent === 'research_only');
+  const withheld = access !== 'curator' && (row.visibility !== 'public' || row.consent === 'private');
   const anonymous = access !== 'curator' && row.consent === 'public_anonymous';
   return {
     id: row.id, objectId: row.object_id, type: row.type, title: row.title,
@@ -191,14 +266,63 @@ export async function getEvidenceByIds(museumId: string, ids: string[], access: 
   return (result.results ?? []).map((row) => mapEvidence(row, access));
 }
 
-export async function listSubmissions(museumId: string, filter: { status?: string; objectId?: string } = {}) {
+/**
+ * Contributions in a workspace, newest first.
+ *
+ * Bounded, because every caller of this reads whole rows: the console counted them by
+ * fetching them, and one contribution with a very long title made the inbox a megabyte
+ * (F6-7). The ceiling is far above any real review queue and finite, which is the
+ * property that matters.
+ */
+export const MAX_SUBMISSION_ROWS = 500;
+
+/** How many contributions one page of the inbox shows. */
+export const SUBMISSIONS_PER_PAGE = 25;
+
+export async function listSubmissions(museumId: string, filter: { status?: string; objectId?: string; limit?: number; offset?: number } = {}) {
   const db = await ensureDatabase(museumId);
   const where = ['museum_id=?'];
   const values: unknown[] = [museumId];
   if (filter.status) { where.push('status=?'); values.push(filter.status); }
   if (filter.objectId) { where.push('object_id=?'); values.push(filter.objectId); }
-  const result = await db.prepare(`SELECT * FROM submissions WHERE ${where.join(' AND ')} ORDER BY created_at DESC`).bind(...values).all<SubmissionRow>();
+  // The ceiling stays: it is what keeps one statement from returning a workspace.
+  // A caller may ask for less, and for a window further down (V9-6).
+  const limit = Math.min(Math.max(1, Math.floor(filter.limit ?? MAX_SUBMISSION_ROWS)), MAX_SUBMISSION_ROWS);
+  const offset = Math.max(0, Math.floor(filter.offset ?? 0));
+  const result = await db.prepare(`SELECT * FROM submissions WHERE ${where.join(' AND ')} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .bind(...values, limit, offset).all<SubmissionRow>();
   return result.results ?? [];
+}
+
+/**
+ * Contribution counts per object, and how many of those are new.
+ *
+ * Four screens counted by loading a page of rows and filtering it, which understates
+ * every number once a workspace passes the row ceiling — the same defect as the
+ * dashboard totals, in four more places (V9-6). Counting is a count.
+ */
+export async function countSubmissionsByObject(museumId: string) {
+  const db = await ensureDatabase(museumId);
+  const result = await db.prepare(`SELECT object_id,
+      COUNT(*) AS total,
+      SUM(CASE WHEN status='received' THEN 1 ELSE 0 END) AS received,
+      MAX(created_at) AS latest
+    FROM submissions WHERE museum_id=? GROUP BY object_id`)
+    .bind(museumId).all<{ object_id: string; total: number; received: number | null; latest: number | null }>();
+  const counts = new Map<string, { total: number; received: number; latest: number | null }>();
+  for (const row of result.results ?? []) counts.set(row.object_id, { total: row.total, received: row.received ?? 0, latest: row.latest });
+  return counts;
+}
+
+/** How many contributions match a filter, counted rather than listed (V9-3, V9-6). */
+export async function countSubmissions(museumId: string, filter: { status?: string; objectId?: string } = {}) {
+  const db = await ensureDatabase(museumId);
+  const where = ['museum_id=?'];
+  const values: unknown[] = [museumId];
+  if (filter.status) { where.push('status=?'); values.push(filter.status); }
+  if (filter.objectId) { where.push('object_id=?'); values.push(filter.objectId); }
+  const row = await db.prepare(`SELECT COUNT(*) AS total FROM submissions WHERE ${where.join(' AND ')}`).bind(...values).first<{ total: number }>();
+  return row?.total ?? 0;
 }
 
 export async function getSubmission(museumId: string, id: string) {
@@ -212,17 +336,32 @@ export async function setSubmissionStatus(museumId: string, id: string, status: 
   return (result.meta?.changes ?? 0) > 0;
 }
 
+/**
+ * How many contributions sit in each status.
+ *
+ * Counted in SQL. This used to read every row — including bodies — to take their length,
+ * and it runs on every curator page load (F6-7).
+ */
 export async function countByStatus(museumId: string) {
-  const rows = await listSubmissions(museumId);
-  const counts: Record<string, number> = { all: rows.length };
-  for (const status of SUBMISSION_STATUSES) counts[status] = rows.filter((row) => row.status === status).length;
+  const db = await ensureDatabase(museumId);
+  const result = await db.prepare('SELECT status, COUNT(*) AS n FROM submissions WHERE museum_id=? GROUP BY status')
+    .bind(museumId).all<{ status: string; n: number }>();
+  const rows = result.results ?? [];
+  const counts: Record<string, number> = { all: rows.reduce((total, row) => total + row.n, 0) };
+  for (const status of SUBMISSION_STATUSES) counts[status] = rows.find((row) => row.status === status)?.n ?? 0;
   return counts;
 }
 
-export async function listActivity(museumId: string, limit = 20) {
+export async function listActivity(museumId: string, limit = 20, offset = 0) {
   const db = await ensureDatabase(museumId);
-  const result = await db.prepare('SELECT id,actor,action,detail,created_at,actor_role,actor_type,tool,target,risk,policy_decision,result FROM activity WHERE museum_id=? ORDER BY created_at DESC LIMIT ?').bind(museumId, limit).all<ActivityRow>();
+  const result = await db.prepare('SELECT id,actor,action,detail,created_at,actor_role,actor_type,tool,target,risk,policy_decision,result FROM activity WHERE museum_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?').bind(museumId, limit, offset).all<ActivityRow>();
   return result.results ?? [];
+}
+
+export async function countActivity(museumId: string) {
+  const db = await ensureDatabase(museumId);
+  const row = await db.prepare('SELECT COUNT(*) AS total FROM activity WHERE museum_id=?').bind(museumId).first<{ total: number }>();
+  return row?.total ?? 0;
 }
 
 function actorDefaults(actor: string): Required<Pick<ActivityMetadata, 'actorRole' | 'actorType'>> {
@@ -295,10 +434,21 @@ export async function getEscalation(museumId: string, id: string) {
  * means they judged there was nothing to act on — the audit trail keeps the
  * difference, because who decided what is the point of this record.
  */
+/**
+ * Returns whether this call is the one that closed it (V9-1).
+ *
+ * `status='open'` belongs in the statement, not in a check before it. The route read
+ * the row, saw `open`, and then wrote — so four requests arriving together all read
+ * `open`, all passed, and all wrote. The referral came out of it recorded as reviewed
+ * twice and dismissed twice, with four different notes, which is the one thing an audit
+ * trail must never say. The approval resolver already puts its guard in the UPDATE and
+ * counts the changed rows; this now does the same.
+ */
 export async function resolveEscalation(museumId: string, id: string, status: 'reviewed' | 'dismissed') {
   const db = await ensureDatabase(museumId);
-  await db.prepare('UPDATE escalations SET status=?, resolved_at=? WHERE museum_id=? AND id=?')
+  const result = await db.prepare("UPDATE escalations SET status=?, resolved_at=? WHERE museum_id=? AND id=? AND status='open'")
     .bind(status, Date.now(), museumId, id).run();
+  return (result.meta?.changes ?? 0) === 1;
 }
 
 /** The true total, so a capped list never lets the interface understate the queue. */
@@ -328,16 +478,201 @@ export async function getApproval(museumId: string, id: string) {
 }
 
 /** Counts behind the curator dashboard and get_collection_summary. */
+/**
+ * The numbers on the dashboard, counted rather than tallied from a page of rows (V9-3).
+ *
+ * These were computed from `listSubmissions`, which stops at MAX_SUBMISSION_ROWS. Past
+ * that ceiling the dashboard understated the queue — 523 contributions were reported as
+ * 500, and 130 private-consent items as 125, so a curator was told there was less
+ * withheld material than there was. The inbox page counted properly and said 523, which
+ * is how one product came to disagree with itself. `countEscalations` already carried
+ * the note about a capped list understating a queue; this is the same hazard, counted
+ * the same way.
+ */
 export async function workspaceSummary(museumId: string) {
-  const [objects, submissions, approvals] = await Promise.all([
-    listObjects(museumId, 'curator'), listSubmissions(museumId), listApprovals(museumId, 'pending'),
+  const db = await ensureDatabase(museumId);
+  const [objects, approvals, totals] = await Promise.all([
+    listObjects(museumId, 'curator'),
+    listApprovals(museumId, 'pending'),
+    db.prepare(`SELECT COUNT(*) AS total,
+        SUM(CASE WHEN status='received' THEN 1 ELSE 0 END) AS received,
+        SUM(CASE WHEN consent='private' THEN 1 ELSE 0 END) AS private_consent
+      FROM submissions WHERE museum_id=?`).bind(museumId).first<{ total: number; received: number | null; private_consent: number | null }>(),
   ]);
   return {
     objects: objects.length,
     open_gaps: objects.filter((object) => object.gap).length,
-    new_submissions: submissions.filter((row) => row.status === 'received').length,
-    total_submissions: submissions.length,
+    new_submissions: totals?.received ?? 0,
+    total_submissions: totals?.total ?? 0,
     pending_approvals: approvals.length,
-    consent_alerts: submissions.filter((row) => row.consent === 'research_only' || row.consent === 'private').length,
+    consent_alerts: totals?.private_consent ?? 0,
   };
+}
+
+export type AssetRow = {
+  id: string; museum_id: string; object_id: string | null; submission_id: string | null; evidence_id: string | null;
+  kind: string; content_type: string; storage_key: string; file_name: string; alt_text: string; caption: string;
+  visibility: string; consent: string; byte_size: number; width: number | null; height: number | null;
+  sort_order: number; uploaded_by: string; created_at: number; updated_at: number;
+};
+
+const ASSET_COLUMNS = 'id,museum_id,object_id,submission_id,evidence_id,kind,content_type,storage_key,file_name,alt_text,caption,visibility,consent,byte_size,width,height,sort_order,uploaded_by,created_at,updated_at';
+
+export async function insertAsset(museumId: string, asset: Omit<AssetRow, 'museum_id'>) {
+  const db = await ensureDatabase(museumId);
+  await db.prepare(`INSERT INTO assets (${ASSET_COLUMNS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(asset.id, museumId, asset.object_id, asset.submission_id, asset.evidence_id, asset.kind, asset.content_type,
+      asset.storage_key, asset.file_name, asset.alt_text, asset.caption, asset.visibility, asset.consent,
+      asset.byte_size, asset.width, asset.height, asset.sort_order, asset.uploaded_by, asset.created_at, asset.updated_at).run();
+}
+
+/** Reads the row unfiltered. Every caller must run `assetAccess` before serving it. */
+export async function getAsset(museumId: string, id: string) {
+  const db = await ensureDatabase(museumId);
+  return db.prepare(`SELECT ${ASSET_COLUMNS} FROM assets WHERE museum_id=? AND id=? LIMIT 1`).bind(museumId, id).first<AssetRow>();
+}
+
+export async function listObjectAssets(museumId: string, objectId: string) {
+  const db = await ensureDatabase(museumId);
+  const result = await db.prepare(`SELECT ${ASSET_COLUMNS} FROM assets WHERE museum_id=? AND object_id=? ORDER BY sort_order, created_at`).bind(museumId, objectId).all<AssetRow>();
+  return result.results ?? [];
+}
+
+export async function listSubmissionAssets(museumId: string, submissionId: string) {
+  const db = await ensureDatabase(museumId);
+  const result = await db.prepare(`SELECT ${ASSET_COLUMNS} FROM assets WHERE museum_id=? AND submission_id=? ORDER BY sort_order, created_at`).bind(museumId, submissionId).all<AssetRow>();
+  return result.results ?? [];
+}
+
+export async function countSubmissionAssets(museumId: string, submissionId: string) {
+  const db = await ensureDatabase(museumId);
+  const row = await db.prepare('SELECT COUNT(*) AS total FROM assets WHERE museum_id=? AND submission_id=?').bind(museumId, submissionId).first<{ total: number }>();
+  return row?.total ?? 0;
+}
+
+/**
+ * Attaches already-uploaded assets to a contribution.
+ *
+ * The asset inherits the contribution's consent and the object it is about. Without
+ * the object id an attached file would never appear in `list_object_assets`, not even
+ * after a curator published it, because that query keys on `object_id`. Visibility is
+ * untouched and stays `restricted`, so the file sits on the object's record as pending
+ * material a curator can see and the public cannot.
+ *
+ * Only unattached assets in this workspace move, so an id belonging to someone else's
+ * contribution simply does not match and the returned count is lower than the ids given.
+ */
+export async function attachAssetsToSubmission(museumId: string, submissionId: string, assetIds: string[], consent: string, objectId?: string, altText?: Record<string, string>) {
+  if (assetIds.length === 0) return 0;
+  const db = await ensureDatabase(museumId);
+  const now = Date.now();
+  const holes = assetIds.map(() => '?').join(',');
+  const result = await db.prepare(`UPDATE assets SET submission_id=?, consent=?, object_id=COALESCE(?,object_id), updated_at=? WHERE museum_id=? AND id IN (${holes}) AND submission_id IS NULL`)
+    .bind(submissionId, consent, objectId ?? null, now, museumId, ...assetIds).run();
+  // Alt text is per asset, so it cannot ride the single UPDATE above. Only assets this
+  // call just claimed are touched, so a stray id cannot relabel someone else's file.
+  //
+  // The text is stored as the caller sent it. It used to be cut at three hundred here as
+  // well, so a value the route had accepted was written shorter than the answer the route
+  // had given — two ceilings for one field, and only one of them visible (V7-4).
+  const described = Object.entries(altText ?? {}).filter(([id, text]) => assetIds.includes(id) && text.trim());
+  if (described.length > 0) {
+    await db.batch(described.map(([id, text]) => db.prepare('UPDATE assets SET alt_text=?, updated_at=? WHERE museum_id=? AND id=? AND submission_id=?')
+      .bind(text.trim(), now, museumId, id, submissionId)));
+  }
+  return result.meta?.changes ?? 0;
+}
+
+/** Opens or withdraws one asset from public display. Consent is judged by the caller. */
+export async function setAssetVisibility(museumId: string, id: string, visibility: 'public' | 'restricted') {
+  const db = await ensureDatabase(museumId);
+  const result = await db.prepare("UPDATE assets SET visibility=?, updated_at=? WHERE museum_id=? AND id=? AND visibility<>'sealed'")
+    .bind(visibility, Date.now(), museumId, id).run();
+  return (result.meta?.changes ?? 0) > 0;
+}
+
+/**
+ * Contributions about one object that consent permits showing publicly (FR-O2).
+ *
+ * `private` material is excluded in SQL rather than filtered afterwards, so a
+ * rendering mistake downstream cannot put it on a public page. Attribution is the
+ * caller's decision: `public_anonymous` permits the content but not the name.
+ */
+export async function listPublicContributions(museumId: string, objectId: string) {
+  const db = await ensureDatabase(museumId);
+  const result = await db.prepare("SELECT * FROM submissions WHERE museum_id=? AND object_id=? AND consent IN ('public_attributed','public_anonymous') ORDER BY created_at DESC")
+    .bind(museumId, objectId).all<SubmissionRow>();
+  return result.results ?? [];
+}
+
+export type NewObjectInput = {
+  id: string; accession: string; title: string; description: string; period: string;
+  objectType: string; material: string; origin: string; acquisitionDate: string | null;
+  recordStatus: string; tone: string; questions: string[]; label: string;
+};
+
+/**
+ * Creates one object with its first published label (FR-K5).
+ *
+ * The label is a real revision 1 rather than a column on the object, so a new record
+ * enters the same publication history every other object has and `labelRevision`
+ * counts from the same place.
+ */
+export async function createObject(museumId: string, input: NewObjectInput, approvedBy: string) {
+  const db = await ensureDatabase(museumId);
+  const now = Date.now();
+  const labelId = `LBL-${input.id}-R1`;
+  const clash = await db.prepare('SELECT id FROM objects WHERE museum_id=? AND (id=? OR accession_number=?) LIMIT 1')
+    .bind(museumId, input.id, input.accession).first<{ id: string }>();
+  if (clash) return { created: false as const, clash: clash.id };
+  await db.batch([
+    db.prepare('INSERT INTO objects (id,museum_id,accession_number,title,description,origin,period,object_type,material,acquisition_date,current_label_id,visibility,provenance_completeness,provenance_gap,record_status,display_tone,questions,version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .bind(input.id, museumId, input.accession, input.title, input.description, input.origin, input.period,
+        input.objectType, input.material, input.acquisitionDate, labelId, 'public', 0, null,
+        input.recordStatus, input.tone, JSON.stringify(input.questions), 1, now, now),
+    db.prepare('INSERT INTO label_publications (id,museum_id,object_id,title,body,assertions,evidence_refs,revision_number,approved_by,published_at,superseded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+      .bind(labelId, museumId, input.id, input.title, input.label, '[]', '[]', 1, approvedBy, now, null),
+    db.prepare('INSERT INTO provenance_events (id,museum_id,object_id,start_date,end_date,title,detail,custodian,location,status,authority,evidence_refs,is_gap,sort_order,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .bind(`PE-${input.id}-ACQ`, museumId, input.id, input.acquisitionDate ?? input.period, null, 'Museum acquisition',
+        `Entered the collection as ${input.accession}.`, 'The Halcyon Museum of Material Memory', null,
+        'verified', 'verified', '[]', 0, 10, now, now),
+  ]);
+  return { created: true as const, labelId };
+}
+
+export type Clarification = { question: string; askedAt: number; askedBy: string };
+
+/** Reads the curator's questions on one contribution, newest last. */
+export function parseClarifications(raw: string): Clarification[] {
+  try {
+    const parsed: unknown = JSON.parse(raw || '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((entry) => {
+      const item = entry as Partial<Clarification>;
+      return typeof item?.question === 'string' && item.question.trim()
+        ? [{ question: item.question, askedAt: Number(item.askedAt) || 0, askedBy: String(item.askedBy ?? 'Curator') }]
+        : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Adds one curator question to a contribution and returns the whole history.
+ *
+ * A list rather than a single column because a review can need more than one question,
+ * and because replacing the previous one would erase what was already asked — the case
+ * screen is the only place a curator can see it.
+ */
+export async function appendClarification(museumId: string, submissionId: string, question: string, askedBy = 'Mina, Curator') {
+  const db = await ensureDatabase(museumId);
+  const row = await getSubmission(museumId, submissionId);
+  if (!row) return [];
+  // Stored whole. Both callers check the question against MAX_TEXT.question first, and a
+  // second, larger, invisible ceiling here could only ever disagree with them (V7-4).
+  const history = [...parseClarifications(row.clarifications), { question: question.trim(), askedAt: Date.now(), askedBy }];
+  await db.prepare('UPDATE submissions SET clarifications=?, updated_at=? WHERE museum_id=? AND id=?')
+    .bind(JSON.stringify(history), Date.now(), museumId, submissionId).run();
+  return history;
 }

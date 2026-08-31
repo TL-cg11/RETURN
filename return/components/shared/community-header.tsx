@@ -1,20 +1,41 @@
 'use client';
 import { NavLink as Link } from '@/components/shared/nav-link';
 import { usePathname } from 'next/navigation';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { registerWebMcpTools } from '@/lib/webmcp/register';
 import { useLiveRecord } from '@/lib/live/use-live-record';
 
-export function CommunityHeader({ curator=false }: { curator?:boolean }) {
+/**
+ * `curator` is the console chrome; `role` is who the session actually is.
+ *
+ * They were one flag, and the tool surface was registered from the chrome. A curator
+ * reaching a record through the console's "Open record →" link, or anyone who had ever
+ * clicked into the console in this browser, then landed on a community page holding a
+ * signed `curator` cookie and was handed the nine community tools — every one of which
+ * the server answered `403 Community role required`. Registration advertises what this
+ * session may call, so it reads the role, and the chrome stays a matter of which page
+ * this is.
+ */
+export function CommunityHeader({ curator=false, role='community' }: { curator?:boolean; role?:'community'|'curator' }) {
   const path=usePathname();
-  useEffect(()=>registerWebMcpTools(curator?'curator':'community'),[curator]);
+  const [failed,setFailed]=useState(false);
+  useEffect(()=>registerWebMcpTools(role),[role]);
   useLiveRecord();
-  async function switchRole(){ await fetch('/api/session',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({role:curator?'community':'curator'})}); location.href=curator?'/':'/curator'; }
+  // The navigation used to happen whether or not the role changed, so a failed write
+  // sent the reader to /curator and a 404 with nothing explaining it (F6-8). The
+  // destination is entered only once the server confirms the role it signed.
+  async function switchRole(){
+    const next = curator ? 'community' : 'curator';
+    const response = await fetch('/api/session',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({role:next})}).catch(()=>null);
+    const session = response?.ok ? await response.json().catch(()=>null) as { role?:string } | null : null;
+    if (session?.role !== next) { setFailed(true); return; }
+    location.href = curator ? '/' : '/curator';
+  }
   return (
     <header className={curator?'console-topbar':'site-header'}>
       <Link className="wordmark" href={curator?'/curator':'/'} aria-label="RE:TURN home">RE<span>:</span>TURN</Link>
-      {curator ? <><div className="console-context"><b>Halcyon Museum</b><span>Curatorial workspace</span></div><button className="role-switch dark" onClick={switchRole}>View community collection <span>↗</span></button></> :
-      <nav aria-label="Primary navigation"><Link className={path==='/'?'active':''} href="/#collection">Collection</Link><Link href="/#about">How it works</Link><button className="curator-link" onClick={switchRole}>Curator console <span aria-hidden="true">↗</span></button></nav>}
+      {curator ? <><div className="console-context"><b>Halcyon Museum</b><span>Curatorial workspace</span></div><button className="role-switch dark" onClick={switchRole}>View community collection <span>↗</span></button>{failed && <span role="status" className="switch-failed">Could not switch views. Try again.</span>}</> :
+      <nav aria-label="Primary navigation">{failed && <span role="status" className="switch-failed">Could not switch views. Try again.</span>}<Link className={path==='/'?'active':''} href="/#collection">Collection</Link><Link href="/#about">How it works</Link><button className="curator-link" onClick={switchRole}>Curator console <span aria-hidden="true">↗</span></button></nav>}
     </header>
   );
 }

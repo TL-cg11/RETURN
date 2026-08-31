@@ -22,7 +22,7 @@ check('11 verified fact needs verified ref',{...base,action:'draft_label',refs:[
 check('12 attributed claim may use submitted ref',{...base,action:'draft_label',refs:[submitted],assertions:[{mode:'attributed_claim',refIndexes:[0]}]},'applied');
 check('13 open question may span refs',{...base,action:'draft_label',refs:[submitted,verified],assertions:[{mode:'open_question',refIndexes:[0,1]}]},'applied');
 check('14 private evidence blocked from public output',{...base,action:'publish_label',publicOutput:true,refs:[{...verified,consent:'private'}]},'denied');
-check('15 research-only evidence blocked from public output',{...base,action:'publish_label',publicOutput:true,refs:[{...verified,consent:'research_only'}]},'denied');
+/* 15 covered research_only, which FR-X1 removed. Test 51 covers the collapsed ladder. */
 check('16 public anonymous evidence allowed in draft',{...base,action:'draft_label',refs:[{...submitted,consent:'public_anonymous'}]},'applied');
 check('17 public attributed evidence allowed in draft',{...base,action:'draft_label',refs:[verified]},'applied');
 check('18 private evidence allowed for non-public research',{...base,action:'draft_label',publicOutput:false,refs:[{...submitted,consent:'private'}]},'applied');
@@ -88,4 +88,84 @@ test('48 a critical action is refused outright, not escalated',()=>{
 });
 test('49 an allowed action carries no policy code',()=>{
   assert.equal(verdict(base).policy,undefined);
+});
+
+/* FR-X1 — consent is three levels. `research_only` was removed because no code path
+   ever distinguished it from `private`: both were withheld, both were denied public
+   quotation. These lock that the collapse changed no verdict. */
+import { buildSeedDataset } from '../../db/seed-data.ts';
+
+const CONSENT_LADDER=['private','public_anonymous','public_attributed'] as const;
+test('50 the consent ladder has exactly three levels',()=>{
+  const seed=buildSeedDataset('museum_test_01');
+  const used=new Set<string>([...seed.evidence.map((row)=>row.consent),...seed.submissions.map((row)=>row.consent)]);
+  for(const value of used)assert.ok(CONSENT_LADDER.includes(value as typeof CONSENT_LADDER[number]),`seed fixture uses removed consent ${value}`);
+});
+test('51 every non-public consent is still refused public quotation',()=>{
+  for(const consent of ['private'] as const){
+    const r=evaluatePolicy({...base,action:'publish_label',publicOutput:true,refs:[{...verified,consent}]});
+    assert.equal(r.outcome,'denied');
+    assert.equal(r.policy,'consent_not_public');
+  }
+});
+test('52 the reassigned injection fixtures stay out of public output',()=>{
+  const seed=buildSeedDataset('museum_test_01');
+  for(const id of ['EV-NAME-REQ','EV-INJ-DEALER','EV-INJ-CATALOG','EV-INJ-SEALED']){
+    const row=seed.evidence.find((item)=>item.id===id);
+    assert.ok(row,`${id} missing from the seed`);
+    const r=evaluatePolicy({...base,action:'publish_label',publicOutput:true,refs:[{authority:row.authority,consent:row.consent,visibility:row.visibility}]});
+    assert.equal(r.outcome,'denied',`${id} reached public output`);
+  }
+});
+test('53 the reassigned fixtures remain available for internal research',()=>{
+  const seed=buildSeedDataset('museum_test_01');
+  for(const id of ['EV-NAME-REQ','EV-INJ-DEALER','EV-INJ-CATALOG']){
+    const row=seed.evidence.find((item)=>item.id===id)!;
+    const r=evaluatePolicy({...base,action:'draft_label',publicOutput:false,refs:[{authority:row.authority,consent:row.consent,visibility:row.visibility}]});
+    assert.equal(r.outcome,'applied',`${id} became unusable for research`);
+  }
+});
+
+/* FR-M1 — publishing an asset is a curator act, judged by the gateway like any other.
+   The consent of the material decides, not the curator's intent. */
+check('54 an asset with public consent may be published',{...base,actor:'curator_ui',action:'publish_asset',publicOutput:true,refs:[{authority:'submitted',consent:'public_attributed',visibility:'public'}]},'applied','MEDIUM');
+check('55 an anonymous-consent asset may be published',{...base,actor:'curator_ui',action:'publish_asset',publicOutput:true,refs:[{authority:'submitted',consent:'public_anonymous',visibility:'public'}]},'applied','MEDIUM');
+check('56 a private asset cannot be published however senior the actor',{...base,actor:'curator_ui',action:'publish_asset',publicOutput:true,refs:[{authority:'verified',consent:'private',visibility:'public'}]},'denied','MEDIUM');
+check('57 a community session cannot publish an asset',{...base,actor:'community',action:'publish_asset',publicOutput:true,refs:[{authority:'submitted',consent:'public_attributed',visibility:'public'}]},'denied');
+test('58 refusing to publish a private asset names the consent rule',()=>{
+  const r=evaluatePolicy({...base,actor:'curator_ui',action:'publish_asset',publicOutput:true,refs:[{authority:'verified',consent:'private',visibility:'public'}]});
+  assert.equal(r.policy,'consent_not_public');
+  assert.ok(r.recovery);
+});
+check('59 publishing does not need verified authority, unlike an official label',{...base,actor:'curator_ui',action:'publish_asset',publicOutput:true,refs:[{authority:'submitted',consent:'public_attributed',visibility:'public'}]},'applied');
+
+/* FR-K5 / FR-X3 — registering a new object creates an official record, so it sits on the
+   HIGH rung with label publication: an agent may propose it, a human decides. */
+check('60 an agent registering an object waits for a human',{...base,action:'register_object',refs:[verified]},'pending_approval','HIGH');
+check('61 a human curator registering an object also queues',{...base,actor:'curator_ui',action:'register_object',refs:[verified]},'pending_approval','HIGH');
+check('62 community cannot register an object at all',{...base,actor:'community',action:'register_object',refs:[verified]},'denied','HIGH');
+check('63 an agent cannot register an object on submitted material alone',{...base,action:'register_object',refs:[submitted]},'denied','HIGH');
+check('64 an agent registering with no evidence is denied',{...base,action:'register_object',refs:[]},'denied','HIGH');
+test('65 a refused registration reaches a curator rather than stopping',()=>{
+  const r=evaluatePolicy({...base,action:'register_object',refs:[submitted]});
+  assert.equal(r.policy,'submitted_sole_authority');
+  assert.equal(r.escalate,true);
+});
+check('66 a human curator may register from submitted material',{...base,actor:'curator_ui',action:'register_object',refs:[submitted]},'pending_approval','HIGH');
+
+/* MCP-E4 — citing nothing and citing only submitted material are different mistakes.
+   Both are refused, and each says which one happened. */
+test('67 a call that cites no evidence says so rather than blaming submitted material',()=>{
+  const r=verdict({...base,action:'publish_label',refs:[]});
+  assert.equal(r.outcome,'denied');
+  assert.equal(r.policy,'no_supporting_evidence');
+  assert.equal(r.escalate,true);
+  assert.match(r.reason,/cited none/);
+});
+test('68 citing submitted material still names the authority rule',()=>{
+  assert.equal(verdict({...base,action:'register_object',refs:[submitted]}).policy,'submitted_sole_authority');
+});
+test('69 a human curator citing nothing is not held to the agent evidence rule',()=>{
+  const r=verdict({...base,actor:'curator_ui',action:'publish_label',refs:[]});
+  assert.equal(r.outcome,'pending_approval');
 });

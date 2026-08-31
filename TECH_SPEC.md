@@ -77,7 +77,9 @@ Curator Agent  ──┤ WebMCP thin client (execute → API fetch)
 | ID | 기능 | 상태 |
 |---|---|---|
 | C1 | **2단계 Authority** `submitted` \| `verified` (3번째 단계 금지). community는 verified 부여 불가 | `[~ stub]` |
-| C2 | **Consent 4단계 강제** `private` / `research_only` / `public_anonymous` / `public_attributed` — 공개 출력·인용 시 서버 강제 | `[~ stub]` |
+| C2 | **Consent 3단계 강제** `private` / `public_anonymous` / `public_attributed` — 공개 출력·인용 시 서버 강제. `research_only`는 FR-X1에서 제거(어느 코드 경로도 `private`와 구분하지 않았다) | `[~ stub]` |
+| C2b | **`publish_asset` (MEDIUM)** 자산의 공개 여부는 큐레이터의 행위이며 게이트웨이를 통과한다. `consent=private` 은 거부 | `[✓ done]` |
+| C2c | **`register_object` (HIGH)** 새 유물 등록. 에이전트는 제안, 인간이 생성. 커뮤니티 불가 (FR-X3) | `[✓ done]` |
 | C3 | **Visibility 3단계** `public` / `restricted` / `sealed`. sealed는 agent tool output에서 완전 제외 | `[✗ todo]` |
 | C4 | **Assertion mode 3종** `verified_fact` / `attributed_claim` / `open_question`. 각 assertion ref ≥ 1; open_question은 경계 evidence ≥ 2 또는 명시적 gap record 참조 | `[~ stub]` |
 
@@ -222,7 +224,7 @@ propose_label_update  refs=[verified accession, verified photo, reviewed oral]  
 |---|---|---|
 | L1 | **정책 unit test ≥35** — role/tenancy, authority, consent, visibility, risk, approval integrity, injection 3변종(내용 무관·동일 authority rule 검증) | `[~ stub]` |
 | L2 | **API 통합 테스트** — e2e 제출, inbox 가시성, submitted→public label 자동반영 안 됨, approval 트랜잭션, realtime, 403, reset 격리 | `[✗ todo]` |
-| L3 | **WebMCP eval** — gap 검색, 특정 사진 관련 object 찾기, evidence 제출, batch 검토, label draft, submitted-only 시도 후 recovery, polling 중 병행 | `[✗ todo]` |
+| L3 | **WebMCP eval** — gap 검색, 특정 사진 관련 object 찾기, evidence 제출, batch 검토, label draft, submitted-only 시도 후 recovery, polling 중 병행 | `[~ partial]` — 정적 게이트(컨텍스트 비용·유사도·설명 적합성)는 구현·통과. 시나리오 7종은 `EVAL_SCENARIOS`에 채점 가능한 형태로 고정. **선택 정확도는 모델 실행 필요** (`npm run eval:tools`) |
 
 **핵심 회귀 테스트(권고 추가):** D4 일반화를 지키기 위해 "`open_return_review` submitted-only → denied" 케이스를 반드시 포함(현재 버그를 고정).
 

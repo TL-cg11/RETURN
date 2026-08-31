@@ -15,6 +15,9 @@ const LEGACY_COLUMNS: Record<'submissions' | 'approvals' | 'activity', ColumnDef
     { name: 'contributor_role', sql: 'contributor_role TEXT' },
     { name: 'evidence_refs', sql: "evidence_refs TEXT NOT NULL DEFAULT '[]'" },
     { name: 'updated_at', sql: 'updated_at INTEGER NOT NULL DEFAULT 0' },
+    { name: 'details', sql: "details TEXT NOT NULL DEFAULT '[]'" },
+    { name: 'asset_ids', sql: "asset_ids TEXT NOT NULL DEFAULT '[]'" },
+    { name: 'clarifications', sql: "clarifications TEXT NOT NULL DEFAULT '[]'" },
   ],
   approvals: [
     { name: 'tool', sql: "tool TEXT NOT NULL DEFAULT 'propose_label_update'" },
@@ -46,14 +49,21 @@ export async function sha256(value: string) {
 async function createTables(d1: D1Database) {
   await d1.batch([
     d1.prepare('CREATE TABLE IF NOT EXISTS museums (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER NOT NULL)'),
-    d1.prepare("CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, museum_id TEXT NOT NULL, object_id TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL, source TEXT NOT NULL, consent TEXT NOT NULL, requested_outcome TEXT NOT NULL, contributor_name TEXT, contributor_role TEXT, evidence_refs TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'received', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0)"),
+    // Write counters, keyed on caller and minute. Not workspace-scoped: the point is to
+    // limit a caller who has no session and can mint workspaces at will (V9-5).
+    d1.prepare('CREATE TABLE IF NOT EXISTS rate_limits (key TEXT NOT NULL, window_start INTEGER NOT NULL, hits INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (key, window_start))'),
+    d1.prepare("CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, museum_id TEXT NOT NULL, object_id TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL, source TEXT NOT NULL, consent TEXT NOT NULL, requested_outcome TEXT NOT NULL, contributor_name TEXT, contributor_role TEXT, evidence_refs TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'received', details TEXT NOT NULL DEFAULT '[]', asset_ids TEXT NOT NULL DEFAULT '[]', clarifications TEXT NOT NULL DEFAULT '[]', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL DEFAULT 0)"),
     d1.prepare("CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, museum_id TEXT NOT NULL, object_id TEXT NOT NULL, risk TEXT NOT NULL, snapshot TEXT NOT NULL, tool TEXT NOT NULL DEFAULT 'propose_label_update', args_snapshot TEXT NOT NULL DEFAULT '{}', snapshot_hash TEXT NOT NULL, object_version INTEGER NOT NULL, justification TEXT NOT NULL DEFAULT '', refs_authority TEXT NOT NULL DEFAULT '[]', refs_consent TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'pending', resolution TEXT, verdict TEXT, edited_body TEXT, edit_reason TEXT, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL DEFAULT 0, resolved_at INTEGER)"),
     d1.prepare("CREATE TABLE IF NOT EXISTS activity (id TEXT PRIMARY KEY, museum_id TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL, created_at INTEGER NOT NULL, actor_role TEXT NOT NULL DEFAULT 'system', actor_type TEXT NOT NULL DEFAULT 'system', tool TEXT NOT NULL DEFAULT 'system', target TEXT NOT NULL DEFAULT '', risk TEXT NOT NULL DEFAULT 'LOW', policy_decision TEXT NOT NULL DEFAULT 'applied', result TEXT NOT NULL DEFAULT 'recorded')"),
     d1.prepare("CREATE TABLE IF NOT EXISTS escalations (id TEXT PRIMARY KEY, museum_id TEXT NOT NULL, object_id TEXT, tool TEXT NOT NULL, args TEXT NOT NULL DEFAULT '{}', policy TEXT NOT NULL, source_refs TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'open', created_at INTEGER NOT NULL, resolved_at INTEGER)"),
     d1.prepare("CREATE TABLE IF NOT EXISTS objects (id TEXT NOT NULL, museum_id TEXT NOT NULL, accession_number TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL, origin TEXT NOT NULL, period TEXT NOT NULL, object_type TEXT NOT NULL, material TEXT NOT NULL, acquisition_date TEXT, current_label_id TEXT, visibility TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public','restricted','sealed')), provenance_completeness INTEGER NOT NULL DEFAULT 0, provenance_gap TEXT, record_status TEXT NOT NULL, display_tone TEXT NOT NULL, questions TEXT NOT NULL DEFAULT '[]', version INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (museum_id,id))"),
-    d1.prepare("CREATE TABLE IF NOT EXISTS evidence (id TEXT NOT NULL, museum_id TEXT NOT NULL, object_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, source_name TEXT NOT NULL, source_relationship TEXT NOT NULL, date_or_period TEXT NOT NULL, place TEXT NOT NULL, authority TEXT NOT NULL CHECK (authority IN ('submitted','verified')), consent TEXT NOT NULL CHECK (consent IN ('private','research_only','public_anonymous','public_attributed')), visibility TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public','restricted','sealed')), submitted_by TEXT NOT NULL, verified_by TEXT, verified_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (museum_id,id))"),
+    d1.prepare("CREATE TABLE IF NOT EXISTS evidence (id TEXT NOT NULL, museum_id TEXT NOT NULL, object_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, source_name TEXT NOT NULL, source_relationship TEXT NOT NULL, date_or_period TEXT NOT NULL, place TEXT NOT NULL, authority TEXT NOT NULL CHECK (authority IN ('submitted','verified')), consent TEXT NOT NULL CHECK (consent IN ('private','public_anonymous','public_attributed')), visibility TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public','restricted','sealed')), submitted_by TEXT NOT NULL, verified_by TEXT, verified_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (museum_id,id))"),
     d1.prepare("CREATE TABLE IF NOT EXISTS provenance_events (id TEXT NOT NULL, museum_id TEXT NOT NULL, object_id TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT, title TEXT NOT NULL, detail TEXT NOT NULL, custodian TEXT, location TEXT, status TEXT NOT NULL CHECK (status IN ('claimed','verified','disputed','gap')), authority TEXT NOT NULL CHECK (authority IN ('submitted','verified')), evidence_refs TEXT NOT NULL DEFAULT '[]', is_gap INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (museum_id,id))"),
     d1.prepare("CREATE TABLE IF NOT EXISTS label_publications (id TEXT NOT NULL, museum_id TEXT NOT NULL, object_id TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, assertions TEXT NOT NULL DEFAULT '[]', evidence_refs TEXT NOT NULL DEFAULT '[]', revision_number INTEGER NOT NULL, approved_by TEXT NOT NULL, published_at INTEGER NOT NULL, superseded_at INTEGER, PRIMARY KEY (museum_id,id), UNIQUE (museum_id,object_id,revision_number))"),
+    // Assets default to `restricted`/`private` so an upload is never public until a
+    // curator makes it so. The bytes live in R2 under `storage_key`; this row is the
+    // only thing that decides who may read them.
+    d1.prepare("CREATE TABLE IF NOT EXISTS assets (id TEXT NOT NULL, museum_id TEXT NOT NULL, object_id TEXT, submission_id TEXT, evidence_id TEXT, kind TEXT NOT NULL CHECK (kind IN ('image','document','audio')), content_type TEXT NOT NULL, storage_key TEXT NOT NULL, file_name TEXT NOT NULL, alt_text TEXT NOT NULL DEFAULT '', caption TEXT NOT NULL DEFAULT '', visibility TEXT NOT NULL DEFAULT 'restricted' CHECK (visibility IN ('public','restricted','sealed')), consent TEXT NOT NULL DEFAULT 'private' CHECK (consent IN ('private','public_anonymous','public_attributed')), byte_size INTEGER NOT NULL, width INTEGER, height INTEGER, sort_order INTEGER NOT NULL DEFAULT 0, uploaded_by TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (museum_id,id))"),
     d1.prepare('CREATE INDEX IF NOT EXISTS idx_submissions_museum_status ON submissions(museum_id, status)'),
     d1.prepare('CREATE INDEX IF NOT EXISTS idx_approvals_museum_status ON approvals(museum_id, status)'),
     d1.prepare('CREATE INDEX IF NOT EXISTS idx_activity_museum_created ON activity(museum_id, created_at)'),
@@ -63,6 +73,8 @@ async function createTables(d1: D1Database) {
     d1.prepare('CREATE INDEX IF NOT EXISTS idx_labels_museum_object_revision ON label_publications(museum_id, object_id, revision_number)'),
     d1.prepare('CREATE UNIQUE INDEX IF NOT EXISTS uq_objects_museum_accession ON objects(museum_id, accession_number)'),
     d1.prepare('CREATE INDEX IF NOT EXISTS idx_escalations_museum_status_created ON escalations(museum_id, status, created_at)'),
+    d1.prepare('CREATE INDEX IF NOT EXISTS idx_assets_museum_object ON assets(museum_id, object_id, sort_order)'),
+    d1.prepare('CREATE INDEX IF NOT EXISTS idx_assets_museum_submission ON assets(museum_id, submission_id)'),
   ]);
 }
 
@@ -84,7 +96,40 @@ async function ensureLegacyColumns(d1: D1Database) {
   await d1.batch([
     d1.prepare("UPDATE submissions SET contributor_name=source, contributor_role='community', updated_at=created_at WHERE updated_at=0"),
     d1.prepare("UPDATE approvals SET args_snapshot=json_object('draft',snapshot,'object_id',object_id,'object_version',object_version), expires_at=created_at+? WHERE expires_at=0").bind(APPROVAL_TTL_MS),
+    // FR-X1 folded `research_only` into `private`. No code path ever distinguished them:
+    // both were withheld from public output and from agent tool bodies. Approvals are left
+    // alone deliberately — `propose_label_update` evaluates with `publicOutput`, so a
+    // non-public consent can never reach a stored snapshot, and rewriting one would break
+    // its hash. Workspaces created before this run keep the older, wider CHECK constraint,
+    // which still admits `private`; nothing writes the removed value any more.
+    d1.prepare("UPDATE evidence SET consent='private' WHERE consent='research_only'"),
+    d1.prepare("UPDATE submissions SET consent='private' WHERE consent='research_only'"),
   ]);
+}
+
+/**
+ * Put the seed's evidence into workspaces that were created before it existed (MCP-E6).
+ *
+ * `seedWorkspace` runs once, when a workspace has no objects, so a record added to the
+ * seed afterwards never reaches a workspace already in use — including the deployed demo.
+ * Every object but the Moonbird Mask held no evidence at all, and the gateway requires a
+ * verified citation for any official change, so those records could not reach human
+ * approval; seeding alone would have fixed that for new workspaces and left the one
+ * people actually look at untouched.
+ *
+ * Written as one INSERT per seed record across every workspace that holds the object.
+ * `INSERT OR IGNORE` against the (museum_id, id) primary key makes it idempotent, so this
+ * adds what is missing and touches nothing that is already there — including a record a
+ * curator has since edited.
+ */
+async function backfillSeedEvidence(d1: D1Database) {
+  const { evidence } = buildSeedDataset('museum_template');
+  await d1.batch(evidence.map((item) => d1.prepare(
+    'INSERT OR IGNORE INTO evidence (id,museum_id,object_id,type,title,body,source_name,source_relationship,date_or_period,place,authority,consent,visibility,submitted_by,verified_by,verified_at,created_at,updated_at)'
+    + ' SELECT ?,o.museum_id,o.id,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? FROM objects o WHERE o.id=?',
+  ).bind(item.id, item.type, item.title, item.body, item.sourceName, item.sourceRelationship, item.date, item.place,
+    item.authority, item.consent, item.visibility, item.submittedBy, item.verifiedBy ?? null, item.verifiedAt,
+    item.createdAt, item.updatedAt, item.objectId)));
 }
 
 let schemaReady: Promise<void> | undefined;
@@ -93,6 +138,7 @@ async function ensureSchema(d1: D1Database) {
   schemaReady ??= (async () => {
     await createTables(d1);
     await ensureLegacyColumns(d1);
+    await backfillSeedEvidence(d1);
   })().catch((error) => {
     schemaReady = undefined;
     throw error;
@@ -125,7 +171,7 @@ export async function seedWorkspace(d1: D1Database, museumId: string) {
   }
   for (const submission of seed.submissions) {
     statements.push(d1.prepare('INSERT OR IGNORE INTO submissions (id,museum_id,object_id,kind,title,description,source,consent,requested_outcome,contributor_name,contributor_role,evidence_refs,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-      .bind(submission.id, museumId, submission.objectId, submission.kind, submission.title, submission.description, submission.source, submission.consent, submission.requested, submission.source, 'community', '[]', submission.status, submission.createdAt, submission.createdAt));
+      .bind(submission.id, museumId, submission.objectId, submission.kind, submission.title, submission.description, submission.source, submission.consent, submission.requested, submission.source, 'community', JSON.stringify(submission.evidenceRefs), submission.status, submission.createdAt, submission.createdAt));
   }
   for (const entry of seed.activities) {
     statements.push(d1.prepare('INSERT OR IGNORE INTO activity (id,museum_id,actor,action,detail,created_at,actor_role,actor_type,tool,target,risk,policy_decision,result) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')

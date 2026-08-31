@@ -1,5 +1,5 @@
 import { NavLink as Link } from '@/components/shared/nav-link';
-import { countEscalations, listActivity, listEscalations, listSubmissions, workspaceSummary } from '@/db/queries';
+import { countEscalations, countSubmissionsByObject, listActivity, listEscalations, listSubmissions, workspaceSummary } from '@/db/queries';
 import { ApprovalTrigger } from '@/components/curator/approval-trigger';
 import { EscalationActions } from '@/components/curator/escalation-actions';
 import { collectionFor } from '@/lib/records';
@@ -9,11 +9,20 @@ export const dynamic = 'force-dynamic';
 
 const pad = (value: number) => String(value).padStart(2, '0');
 
-/** Plain-language rendering of a policy code. The card must explain, not just label. */
+/**
+ * Plain-language rendering of a policy code. The card must explain, not just label.
+ *
+ * Two of these are not refusals. An agent that reaches the end of what it may decide
+ * hands the work over, and that arrives in the same queue as a refusal — so a card
+ * without an entry here read "The action was refused by policy." over a proposal the
+ * gateway had allowed as far as a human. The queue holds both, and says which is which.
+ */
 const POLICY_REASON: Record<string, string> = {
   submitted_sole_authority: 'Submitted evidence cannot be the sole authority for an official change.',
   visibility_restricted: 'Restricted or sealed material cannot appear in public output.',
   consent_not_public: 'The evidence consent does not permit public quotation.',
+  pending_human_registration: 'An agent proposed a new collection record. Only a curator can create it.',
+  pending_stewardship_review: 'An agent asked for a stewardship review. Only a curator can open one.',
 };
 
 function sourceRefs(raw: string) {
@@ -25,16 +34,18 @@ export default async function CuratorDashboard() {
   const { museumId } = await sessionFromCookies();
   const [summary, submissions, activity, collection, escalations, escalationTotal] = await Promise.all([
     workspaceSummary(museumId),
-    listSubmissions(museumId),
+    listSubmissions(museumId, { limit: 5 }),
     listActivity(museumId, 5),
     collectionFor(museumId, 'curator'),
     listEscalations(museumId, 'open', 5),
     countEscalations(museumId, 'open'),
   ]);
-  const queue = submissions.slice(0, 5);
+  const queue = submissions;
+  // Counted, not tallied from the five rows the queue needed (V9-6).
+  const sourceCounts = await countSubmissionsByObject(museumId);
 
   return (
-    <main className="dashboard">
+    <main id="main" tabIndex={-1} className="dashboard">
       <div className="dashboard-head">
         <div>
           <p className="console-eyebrow">Curatorial workspace</p>
@@ -53,7 +64,7 @@ export default async function CuratorDashboard() {
       {escalations.length > 0 && (
         <section className="escalation-panel">
           <header>
-            <div><p className="console-eyebrow">Referred to you</p><h2>The gateway refused {escalationTotal === 1 ? 'an action' : `${escalationTotal} actions`}</h2></div>
+            <div><p className="console-eyebrow">Referred to you</p><h2>{escalationTotal === 1 ? 'An action is waiting on you' : `${escalationTotal} actions are waiting on you`}</h2></div>
             <p>An agent stopped short of the official record and handed the question over. Nothing was published.</p>
           </header>
           {escalations.map((item) => (
@@ -70,7 +81,11 @@ export default async function CuratorDashboard() {
               <span className="policy-code">{item.policy.replaceAll('_', ' ')}</span>
               <time>{relativeTime(item.created_at)}</time>
               <div className="escalation-close">
-                {item.object_id && <Link className="escalation-open" href={`/objects/${item.object_id}`}>Open record →</Link>}
+                {/* Only a record that exists. An escalation may name an object that was
+                    proposed and never created, and a link to it is a link to a 404 (EA-4). */}
+                {item.object_id && collection.some((object) => object.id === item.object_id) && (
+                  <Link className="escalation-open" href={`/objects/${item.object_id}`}>Open record →</Link>
+                )}
                 <EscalationActions escalationId={item.id} />
               </div>
             </article>
@@ -126,7 +141,7 @@ export default async function CuratorDashboard() {
             <Link href={`/objects/${object.id}`} key={object.id}>
               <div><strong>{object.title}</strong><span>{object.gap}</span></div>
               <i style={{ width: `${62 - index * 12}%` }} />
-              <b>{submissions.filter((s) => s.object_id === object.id).length} sources</b>
+              <b>{sourceCounts.get(object.id)?.total ?? 0} sources</b>
             </Link>
           ))}
         </div>

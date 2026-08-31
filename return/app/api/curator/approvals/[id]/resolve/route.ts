@@ -4,9 +4,9 @@ import {
   canonicalJson, isDraftHashLegacyApprovalSnapshot, isLabelApprovalSnapshot, isLegacyLabelApprovalSnapshot,
   validateLabelApprovalIntegrity, type ApprovalEvidenceSnapshot,
 } from '@/lib/approval-snapshot';
-import type { Authority, Consent, Visibility } from '@/lib/domain/types';
+import { MAX_TEXT, type Authority, type Consent, type Visibility } from '@/lib/domain/types';
 import { evaluatePolicy } from '@/lib/policy/evaluate';
-import { sessionFromRequest } from '@/lib/session';
+import { guardedWrite, readJsonBody, refused, takeText } from '@/lib/http/input';
 
 type PublicationTarget = {
   id: string;
@@ -46,18 +46,55 @@ function unavailable(status: string) {
   }, { status: 409 });
 }
 
-export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
-  const { role, museumId } = await sessionFromRequest(request);
-  if (role !== 'curator') return Response.json({ error: 'Curator role required' }, { status: 403 });
+function linkedSubmissionUpdate(
+  db: Awaited<ReturnType<typeof ensureDatabase>>,
+  museumId: string,
+  objectId: string,
+  evidenceIds: string[],
+  status: 'reflected in label' | 'closed',
+  now: number,
+  approvalId: string,
+  approvalStatus: string,
+) {
+  if (evidenceIds.length === 0) return null;
+  const holes = evidenceIds.map(() => '?').join(',');
+  return db.prepare(`UPDATE submissions SET status=?,updated_at=?
+    WHERE museum_id=? AND object_id=? AND status NOT IN ('reflected in label','closed')
+    AND EXISTS (SELECT 1 FROM approvals WHERE museum_id=? AND id=? AND status=? AND resolved_at=?)
+    AND (
+      EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(submissions.evidence_refs) THEN submissions.evidence_refs ELSE '[]' END) ref WHERE ref.value IN (${holes}))
+      OR EXISTS (SELECT 1 FROM activity a WHERE a.museum_id=submissions.museum_id
+        AND (a.result=submissions.id OR submissions.id=a.result || '-' || submissions.museum_id) AND a.target IN (${holes}))
+    )`)
+    .bind(status, now, museumId, objectId, museumId, approvalId, approvalStatus, now, ...evidenceIds, ...evidenceIds);
+}
+
+export const POST = guardedWrite(async (request: Request, session, { params }: { params: Promise<{ id: string }> }) => {
+  const { role, museumId } = session;
+  if (role !== 'curator') return Response.json({ outcome: 'denied', risk: 'LOW', reason: 'Curator role required.', recovery: 'Switch to the curator workspace.' }, { status: 403 });
 
   const { id } = await params;
-  const body = await request.json().catch(() => ({})) as { action?: string; draft?: unknown; editReason?: unknown };
-  if (!['approved', 'approve_with_edit', 'rejected'].includes(body.action ?? '')) {
+  const parsed = await readJsonBody(request);
+  if (refused(parsed)) return parsed.refusal;
+  const body = parsed;
+  if (typeof body.action !== 'string' || !['approved', 'approve_with_edit', 'rejected'].includes(body.action)) {
     return invalid('Invalid resolution.', 'Choose approved, approve_with_edit, or rejected.');
   }
+  /**
+   * The edited label and the reason for editing it, checked like every other stored
+   * field (V7-1).
+   *
+   * This route publishes to the public record, and it was the one write route the F6
+   * pass gave the wrapper but never the reader: `draft` was type-checked and then
+   * written at whatever length it arrived, so a curator editing in the drawer published
+   * six thousand characters past the ceiling that `propose_label_update` enforces on the
+   * same text. The tool refused and the console published. Now both read one number.
+   */
+  const editReason = takeText(body.editReason, 'editReason', { max: MAX_TEXT.editReason, label: 'An edit reason' });
+  if (refused(editReason)) return editReason.refusal;
 
   const approval = await getApproval(museumId, id).catch(() => null);
-  if (!approval) return Response.json({ error: 'Approval not found' }, { status: 404 });
+  if (!approval) return Response.json({ outcome: 'invalid', field: 'approval_id', reason: 'No approval with that id exists in this workspace.', recovery: 'Call list_pending_approvals to see what is waiting.' }, { status: 404 });
   if (approval.status !== 'pending') return unavailable(approval.status);
 
   let rawSnapshot: unknown;
@@ -84,6 +121,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const snapshotObjectId = currentSnapshot?.target.object_id ?? legacySnapshot!.object_id;
   const snapshotObjectVersion = currentSnapshot?.target.version ?? legacySnapshot!.object_version;
   const snapshotDraft = currentSnapshot?.draft ?? legacySnapshot!.draft;
+  const evidenceIds = currentSnapshot
+    ? currentSnapshot.evidence_refs.map((ref) => ref.id)
+    : Array.isArray(legacySnapshot?.evidence_refs) ? legacySnapshot.evidence_refs.map(String) : [];
   if (snapshotObjectId !== approval.object_id || snapshotObjectVersion !== approval.object_version || snapshotDraft !== approval.snapshot) {
     return mismatch('The approval target, version, or draft no longer matches its immutable snapshot.');
   }
@@ -97,9 +137,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
   if (body.action === 'rejected') {
     const now = Date.now();
+    const linked = linkedSubmissionUpdate(db, museumId, approval.object_id, evidenceIds, 'closed', now, id, 'rejected');
     const [decision] = await db.batch([
       db.prepare("UPDATE approvals SET status='rejected', resolution='rejected', verdict='rejected', edited_body=NULL, edit_reason=?, resolved_at=? WHERE museum_id=? AND id=? AND status='pending' AND expires_at>?")
-        .bind(typeof body.editReason === 'string' && body.editReason.trim() ? body.editReason.trim() : null, now, museumId, id, now),
+        .bind(editReason || null, now, museumId, id, now),
+      ...(linked ? [linked] : []),
       db.prepare(`INSERT INTO activity (id,museum_id,actor,action,detail,created_at,actor_role,actor_type,tool,target,risk,policy_decision,result)
         SELECT ?,?,'Mina, Curator','rejected label revision',?,?,'curator_ui','human',?,?,'HIGH','denied','rejected'
         WHERE EXISTS (SELECT 1 FROM approvals WHERE museum_id=? AND id=? AND status='rejected' AND resolved_at=?)`)
@@ -113,15 +155,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     return Response.json({ outcome: 'applied', id, status: 'rejected', resolution: 'rejected', edited: false, published: false, persisted: true });
   }
 
-  const draft = typeof body.draft === 'string' ? body.draft.trim() : approval.snapshot.trim();
+  // A draft the caller did not send means the proposal stands as written. A draft sent
+  // empty means the curator cleared the box, which is a different thing and is refused:
+  // publishing the original under an emptied editor would publish what they deleted.
+  const draftGiven = body.draft !== undefined && body.draft !== null;
+  const draft$ = takeText(body.draft, 'draft', { max: MAX_TEXT.draft, required: draftGiven, label: 'A public label' });
+  if (refused(draft$)) return draft$.refusal;
+  const draft = draft$ || approval.snapshot.trim();
   if (!draft) return invalid('An approved label cannot be empty.', 'Enter public label text or reject the proposal.');
   if (target.version !== approval.object_version || target.current_revision !== approval.object_version || !target.current_label_id) {
     return mismatch('The public object version or current label changed after this approval was requested.');
   }
 
-  const evidenceIds = currentSnapshot
-    ? currentSnapshot.evidence_refs.map((ref) => ref.id)
-    : Array.isArray(legacySnapshot?.evidence_refs) ? legacySnapshot.evidence_refs.map(String) : [];
   const evidence = await getEvidenceByIds(museumId, evidenceIds, 'curator');
   const storedAuthorities = parseArray(approval.refs_authority);
   const storedConsents = parseArray(approval.refs_consent);
@@ -181,14 +226,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
   const edited = body.action === 'approve_with_edit' || draft !== approval.snapshot.trim();
   const resolution = edited ? 'approved_with_edit' : 'approved';
-  const editReason = edited
-    ? (typeof body.editReason === 'string' && body.editReason.trim() ? body.editReason.trim() : 'Curator edited the proposed label during approval.')
-    : null;
+  const recordedEditReason = edited ? (editReason || 'Curator edited the proposed label during approval.') : null;
   const revision = approval.object_version + 1;
   const publicationId = `LBL-${approval.object_id}-R${revision}`;
   const assertions = currentSnapshot?.assertions ?? (Array.isArray(legacySnapshot?.assertions) ? legacySnapshot.assertions : []);
   const now = Date.now();
   const previousLabelId = target.current_label_id;
+  const linked = linkedSubmissionUpdate(db, museumId, approval.object_id, evidenceIds, 'reflected in label', now, id, resolution);
 
   const results = await db.batch([
     db.prepare(`INSERT INTO label_publications (id,museum_id,object_id,title,body,assertions,evidence_refs,revision_number,approved_by,published_at,superseded_at)
@@ -208,7 +252,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     db.prepare(`UPDATE approvals SET status=?,resolution=?,verdict='approved',edited_body=?,edit_reason=?,resolved_at=?
       WHERE museum_id=? AND id=? AND status='pending' AND expires_at>?
       AND EXISTS (SELECT 1 FROM objects WHERE museum_id=? AND id=? AND version=? AND current_label_id=?)`)
-      .bind(resolution, resolution, edited ? draft : null, editReason, now, museumId, id, now, museumId, approval.object_id, revision, publicationId),
+      .bind(resolution, resolution, edited ? draft : null, recordedEditReason, now, museumId, id, now, museumId, approval.object_id, revision, publicationId),
+    ...(linked ? [linked] : []),
     db.prepare(`INSERT INTO activity (id,museum_id,actor,action,detail,created_at,actor_role,actor_type,tool,target,risk,policy_decision,result)
       SELECT ?,?,'Mina, Curator',?,?,?,'curator_ui','human',?,?,'HIGH','applied',?
       WHERE EXISTS (SELECT 1 FROM approvals WHERE museum_id=? AND id=? AND status=? AND resolved_at=?)`)
@@ -231,4 +276,4 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     outcome: 'applied', risk: policy.risk, id, status: resolution, resolution, edited, persisted: true, published: true,
     object_id: approval.object_id, revision, publication_id: publicationId, previous_label_id: previousLabelId,
   });
-}
+});

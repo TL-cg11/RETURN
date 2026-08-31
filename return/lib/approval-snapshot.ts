@@ -82,7 +82,7 @@ export function buildLabelApprovalSnapshot(input: {
 }
 
 const authorities = new Set(['submitted', 'verified']);
-const consents = new Set(['private', 'research_only', 'public_anonymous', 'public_attributed']);
+const consents = new Set(['private', 'public_anonymous', 'public_attributed']);
 const visibilities = new Set(['public', 'restricted', 'sealed']);
 const assertionModes = new Set(['verified_fact', 'attributed_claim', 'open_question']);
 

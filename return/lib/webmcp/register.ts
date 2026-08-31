@@ -49,11 +49,28 @@ function resolveContext(): { context?: ModelContext; legacy: boolean } {
   return { legacy: false };
 }
 
+/**
+ * What a surface can tell a reader about its own registration.
+ *
+ * The curator panel asked `document.modelContext` directly and reported on that alone,
+ * which disagreed with the registrar twice over: it called a legacy browser — one that
+ * exposes only `navigator.modelContext`, where `registerWebMcpTools` does register —
+ * unregistered, while a heading beside it counted the catalogue and called every entry
+ * "registered" on a browser exposing neither. One resolution, read by both.
+ */
+export function modelContextStatus(): { available: boolean; legacy: boolean } {
+  const { context, legacy } = resolveContext();
+  return { available: !!context, legacy };
+}
+
 function specFor(tool: ToolSpec, signal: AbortSignal) {
   return {
     name: tool.name,
     description: tool.description,
-    inputSchema: { type: 'object', properties: tool.properties ?? {}, required: tool.required ?? [] },
+    // `additionalProperties:false` so the schema says what the server does. An argument
+    // the catalogue never declared used to be accepted in silence, which reads to an
+    // agent as "that field worked" — the same failure as a silently-truncated value.
+    inputSchema: { type: 'object', properties: tool.properties ?? {}, required: tool.required ?? [], additionalProperties: false },
     annotations: { readOnlyHint: tool.readOnly, untrustedContentHint: tool.untrusted ?? false },
     // The specification's only defined way to take a registration back.
     signal,
@@ -78,7 +95,14 @@ function specFor(tool: ToolSpec, signal: AbortSignal) {
  */
 export function registerWebMcpTools(role: 'community' | 'curator') {
   const { context, legacy } = resolveContext();
-  if (!context) return () => {};
+  if (!context) {
+    // A browser without the host API loses the tools, not the page. It used to lose them
+    // in silence, so a reader of this console had no way to tell a working registration
+    // from none at all (MCP-E8). The sidebar panel reports the same state on screen; this
+    // is for whoever is looking at the console instead.
+    console.warn('[RE:TURN] Neither document.modelContext nor navigator.modelContext is exposed by this browser, so no WebMCP tool was registered. The same tools stay reachable over POST /api/tools/<name>.');
+    return () => {};
+  }
   if (legacy) {
     console.warn('[RE:TURN] navigator.modelContext is deprecated; this browser should expose document.modelContext.');
   }

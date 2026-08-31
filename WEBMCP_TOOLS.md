@@ -3,21 +3,29 @@
 > 이 문서는 `TECH_SPEC.md`의 기능 명세를 **에이전트에 노출할 WebMCP 툴 계약**으로 구체화한 것이다.
 > 계획서(`RETURN_PLAN.md`)의 원래 18개(Community 6 + Curator 12)를 **계약 수준에서 고도화**하고,
 > 조사 흐름의 실제 공백 1개(`get_evidence_detail`)를 채워 **카탈로그 19개**로 확정한다.
+>
+> **2026-08-29 — 배포본과 대조 완료.** 설계 이후 구현에서 뒤집힌 결정이 세 곳 있었고, 이 문서가
+> 그것을 따라오지 못하고 있었다. §0의 두 행(`get_evidence_detail` 철회, `save_label_draft` 개명 철회)과
+> §1.4(응답 형식)를 **코드에 맞춰 고쳤다.** 계약을 판정할 때의 기준은 `lib/webmcp/tools.ts`(카탈로그)와
+> `app/api/tools/[name]/route.ts`(서버)이며, 이 문서는 그 둘을 설명한다.
 
 ## 0. 결정 요약
 
 | 항목 | 결정 |
 |---|---|
-| 카탈로그 총량 | **19개** — Community **6** + Curator **13** |
-| 최대 동시 노출 | **13개** (role-scoped 등록, 두 surface 동시 로드 없음) |
-| 개수 방향 | 늘리지 않음. "고도화"는 **개수가 아니라 계약(schema·annotation·응답·정책 바인딩)** |
+| 카탈로그 총량 | **22개** (고유 이름 기준) — Community 전용 **7** + Curator 전용 **13** + **Shared 2** |
+| 구현 상태 | 이 문서는 **배포본과 대조 완료(2026-08-29)**. 아래 두 항목(`get_evidence_detail`, `save_label_draft`)은 설계 단계의 결정이었고 구현에서 뒤집혔다. 취소선으로 남긴다 — 계약 판정의 기준은 **코드(`lib/webmcp/tools.ts`)** 다 |
+| 최대 동시 노출 | **15개** — Curator 표면에 등록되는 총량(고유 13 + Shared 2). Community 표면은 9개. role-scoped 등록이므로 두 surface 동시 로드는 없음 |
+| 개수 방향 | **FR-X2에서 완화됨.** 자산 파이프라인이 범위에 들어오면서 FR-W1의 3개를 추가했다. 그 외에는 여전히 늘리지 않으며, "고도화"는 **개수가 아니라 계약(schema·annotation·응답·정책 바인딩)** |
+| Shared surface | `list_object_assets` · `get_asset_detail` 은 **양쪽 표면에 등록된다.** 같은 호출이 역할에 따라 다르게 답해야 하기 때문이다 — 커뮤니티는 public·공개동의 자산만, 큐레이터는 restricted 까지. 허용 여부가 아니라 **내용**이 역할에 따라 갈린다 |
 | 병합 여부 | `build_provenance_timeline`과 `compare_evidence`는 **분리 유지** (Swiss-army 다기능 툴 회피) |
-| 신규 | `get_evidence_detail` — consent/visibility redaction, `sealed` 존재 은닉 |
-| 개명 | `draft_label` → **`save_label_draft`** (내부 draft를 저장하므로 write) |
-| 계약 수정 | `readOnlyHint` 모순 제거, 4개 표준 annotation 명시, `untrustedContentHint`는 비표준 → compat 격리 + 응답 `trust` 병행 |
+| ~~신규~~ **철회** | ~~`get_evidence_detail`~~ — **구현하지 않았다.** 조사 흐름의 공백이라고 본 것은 실제로는 `get_review_case`(§3.4)가 이미 메우고 있었다: 케이스 한 건의 evidence를 consent·visibility redaction과 `sealed` 은닉까지 적용해 돌려주므로, 같은 redaction을 한 번 더 구현한 단건 툴은 표면만 넓히고 답은 늘리지 않았다. Curator 전용 13개는 이 자리를 `register_object`(§3C)가 채운다 |
+| ~~개명~~ **철회** | ~~`draft_label` → `save_label_draft`~~ — **개명하지 않았다.** 개명의 전제였던 "내부 draft를 저장한다"가 틀렸다. 구현된 `draft_label`은 아무것도 쓰지 않고 초안 문자열과 assertion을 계산해 돌려줄 뿐이며, 저장은 `propose_label_update`의 승인 스냅샷이 한다. 이름은 `draft_label`, `readOnly: true` 로 유지 |
+| 계약 수정 | `readOnlyHint` 모순 제거, 4개 표준 annotation 명시, `untrustedContentHint`는 비표준 → compat 격리 + 응답 `untrusted_content` 병행 |
+| 인자 엄격성 | 등록 스키마는 `additionalProperties:false`, 서버는 **선언되지 않은 인자를 거부**하고 **선언된 required 누락을 required 오류로** 답한다 (§1.3A) |
 | 삭제/추가 금지 | evidence 삭제·authority 승격·실제 반환 툴은 **추가하지 않음** (권한 모델 위배) |
 
-**왜 개수를 안 늘리나:** 두 surface는 역할별로만 등록되어 모델이 한 번에 보는 최대치는 13개다. 툴 품질의 80%는 스키마·계약에서 나오며, 대규모·중복 surface는 선택 정확도와 컨텍스트 효율을 떨어뜨린다. (출처: [Anthropic — Writing tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents), [MCP Tool Schema Design 2026](https://kansei-link.com/en/insights/mcp-tool-schema-design-guide-2026.html))
+**왜 개수를 안 늘리나:** 두 surface는 역할별로만 등록되어 모델이 한 번에 보는 최대치는 15개다(Curator 표면). 툴 품질의 80%는 스키마·계약에서 나오며, 대규모·중복 surface는 선택 정확도와 컨텍스트 효율을 떨어뜨린다. (출처: [Anthropic — Writing tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents), [MCP Tool Schema Design 2026](https://kansei-link.com/en/insights/mcp-tool-schema-design-guide-2026.html))
 
 ---
 
@@ -29,7 +37,13 @@
 - 이름 ≤30자, 소문자 snake_case, 동사_명사. 역할 접두사 없음(등록 자체가 role-scoped).
 - 등록: `document.modelContext.registerTool()` 우선, `navigator.modelContext`는 legacy fallback (`document.modelContext ?? navigator.modelContext`).
 - 해제: 등록별 `AbortController` → `registerTool(spec, { signal })` → role 전환·unmount 시 `abort()`. **`unregisterTool()`는 스펙에 없음** (TECH_SPEC §G2).
-- Community 페이지는 Curator 툴을 절대 등록하지 않음(등록 분리 + 서버 재검증 이중 방어).
+- **등록 표면은 페이지가 아니라 세션 role 을 따른다 (V10-8).** 종전에는 "community 페이지 = community 툴"
+  이었고, 그래서 `role=curator` 쿠키를 든 채 `/` 나 `/objects/[id]` 에 온 세션 — 콘솔의
+  "Open record →" 링크가 정확히 그 경로다 — 이 community 툴 9개를 등록받고, 그 9개 전부가
+  서버에서 `403 Community role required` 로 돌아왔다. 쓸 수 있다고 광고한 툴이 하나도 안 되는
+  상태였다. 등록은 **이 세션이 호출할 수 있는 것**을 광고하는 일이므로 role 을 읽는다.
+- Curator 툴은 **curator 세션에만** 등록된다. 등록 분리는 편의이고, 경계는 서버 재검증이다
+  (`/api/tools/<name>` 이 매 호출마다 role 을 다시 본다).
 
 ### 1.2 inputSchema 예산
 - `type:"object"`, `additionalProperties:false`, 명시적 `required`.
@@ -49,13 +63,39 @@
 
 - `untrustedContentHint`는 **표준 annotation이 아님** → WebMCP compat 확장으로 격리하고, **응답 body의 `trust:"untrusted"` + UI badge**로 이중 표기한다. annotation은 보안 경계가 아니라 힌트이며, 실제 강제는 서버 정책이 한다.
 
+### 1.3A 인자 엄격성 (V10-1 · V10-2)
+
+등록 스키마의 `additionalProperties:false`(§1.2)를 **서버가 실제로 강제한다.**
+
+- **선언되지 않은 인자는 거부한다.** 종전에는 `submit_evidence` 가 정의된 적 없는 `object_hint` 를
+  받고 `applied` 로 답했다. 에이전트에게 그것은 "그 필드가 기록됐다"로 읽힌다 — 값을 조용히
+  잘라 저장하던 것과 같은 실패다. 응답은 `invalid` + 그 필드 이름 + **이 툴이 받는 인자 목록**이다.
+- **선언된 `required` 누락은 required 오류로 답한다.** 종전에는 두 제출 툴의 세 필드에만 검사가
+  있어서, `object_id` 같은 id 는 전부 조회로 흘러가 "No object with that id is in this collection."
+  으로 돌아왔다 — 인자를 **빼먹은** 호출이 id가 **틀렸다**는 답을 받았다. 지금은 카탈로그의
+  `required` 를 그대로 읽어 전 툴에 적용하고, recovery 로 그 필드의 카탈로그 description 을 준다.
+- 두 검사는 이 순서로 돈다. required 를 오타 낸 호출이 "그런 필드는 없다"를 먼저 읽어야
+  자기가 실제로 보낸 이름을 알 수 있기 때문이다.
+
 ### 1.4 응답 형식 (discriminated union)
-- **성공(read):** `{ status:"ok", data, refs?, request_id, trust?:"untrusted" }`
-- **성공(write, 즉시):** `{ status:"applied", risk, data, refs, request_id }`
-- **승인 대기:** `{ status:"pending_approval", risk:"HIGH", approval_id, reason, next, request_id }`
-- **거부:** `{ status:"denied", risk, policy, message, next, escalation_id?, retryable, request_id }`
-- **입력오류:** `{ status:"invalid", field, message, next, retryable:true, request_id }`
-- **모든 non-success에 `next` 필수.** `next`는 `{ tool?, args_patch?, human? }`로 다음 행동을 구조적으로 제시한다.
+
+> **설계 당시 `status`/`request_id`/구조화된 `next` 로 적었으나, 구현은 4필드 계약으로 수렴했다.**
+> 아래는 배포본이 실제로 답하는 형식이다. 판별자는 `status` 가 아니라 **`outcome`** 이고,
+> 다음 행동은 객체가 아니라 **한 줄 문자열 `recovery`** 다. `request_id` 는 도입하지 않았다 —
+> 이 표면은 상관 추적이 필요한 비동기 호출이 없고, HIGH 는 `approval_id`·`escalation_id` 로
+> 이미 추적된다.
+
+- **성공(read):** 봉투 없이 **데이터 그 자체.** `outcome` 을 싣지 않는다. 읽기는 아무것도
+  결정하지 않으므로 결정을 보고하지 않는다. `untrustedContentHint:true` 인 툴은 `untrusted_content:true` 를 함께 싣는다.
+- **성공(write, 즉시):** `{ outcome:"applied", risk, reason, …데이터 }`
+- **승인 대기:** `{ outcome:"pending_approval", risk:"HIGH", reason, approval_id|review_id, next }`
+- **거부:** `{ outcome:"denied", risk, policy, reason, recovery, escalation_id?, escalated_to_curator? }`
+- **입력오류:** `{ outcome:"invalid", field, reason, recovery }`
+- **예기치 않은 실패:** `{ outcome:"error", reason, recovery }` (§1.5)
+- **모든 non-success에 `recovery` 필수** — 무엇을 하면 되는지 한 문장으로 말한다.
+- **read 툴은 write 봉투를 쓰지 않는다 (V10-3).** `build_provenance_timeline` 이
+  `readOnlyHint:true` 인 채로 `{"outcome":"applied","risk":"LOW"}` 를 돌려주고 있었다.
+  쓰지 않은 호출이 쓰기의 봉투를 입으면 annotation 이 거짓말이 된다.
 - **출력 예산은 응답 종류에 따라 둘로 나뉜다.**
   - **단건 응답**(하나의 record를 읽는 툴): **~1.5K자 이내.** 긴 본문 대신 ID·요약·`refs` 반환. 원문은 별도 조회.
   - **목록 응답**(`list_*`): 절대 크기가 아니라 **페이지 크기에 유계**여야 한다. 즉 응답 크기는 `limit`에 비례하고, workspace에 레코드가 몇 건 쌓였는지와 무관해야 한다.
@@ -64,6 +104,28 @@
 
 ### 1.5 정책 바인딩 (전 툴 공통)
 모든 툴은 서버에서 순서대로 통과한다: **schema → role → tenancy → record 존재 → risk → consent/visibility → assertion×authority → justification provenance → (HIGH시) immutable snapshot → activity log.** (TECH_SPEC §D)
+
+**응답 계약.** 모든 답은 `outcome` 을 싣는다. 값은 다섯 가지다 —
+`applied` · `pending_approval` · `denied` · `invalid`, 그리고 **`error`**.
+`error` 는 예기치 않은 실패에만 쓴다(EA-1): 적용되지도, 큐에 들어가지도, 정책에 거부되지도,
+호출자의 실수도 아닌 경우다. 종전에는 이 경우 플랫폼의 **본문 없는 500** 이 그대로 나가서
+에이전트가 읽을 것도 시도할 것도 없었다. `error` 응답은 `reason` 과 `recovery` 를 함께 싣고,
+원래 예외는 서버 로그에 남는다.
+
+**선언한 `required` 는 강제한다 (F4-1).** 카탈로그가 required 로 적은 파라미터는 서버가 실제로
+요구한다. `open_return_review` 만 `basis` 가 없을 때 서버가 문구를 지어내고 통과시키고 있었다.
+17개 required 파라미터를 하나씩 빼며 확인했고, 지금은 전부 강제된다.
+
+**모르는 툴 이름도 계약 안에서 답한다 (F4-4).** `{"error":"Unknown tool"}` 이 아니라
+`invalid` + `field:"name"` 이다. 이 표면의 모든 응답이 `outcome` 을 싣는다.
+
+**범위 밖 인자는 구부리지 않는다 (F4-5).** `list_submissions.limit` 은 1–100 의 정수여야 하고,
+벗어나면 `invalid` 다. 종전에는 -5 를 1 로, 0 을 20 으로 조용히 바꿨다. 생략은 기본값 20 이며,
+이는 보정이 아니다.
+
+**인자 본문.** 파싱되지 않는 본문은 `invalid` + `field:"body"` 로 거부한다(OB-3). 종전에는
+`{}` 로 읽어서, 질의 없는 검색처럼 그럴듯한 성공으로 보였다. 본문이 아예 없으면 인자 없는
+호출로 그대로 처리한다.
 - 제출은 항상 `authority:"submitted"`. community는 `verified` 부여 불가.
 - HIGH↑ **agent** action이 refs 없음 또는 전부 submitted → **denied + escalation** (실행 아님).
 - `sealed`는 어떤 출력에도 포함 금지(존재조차 노출 안 함).
@@ -74,6 +136,8 @@
 ---
 
 ## 2. Community 툴 (6) — `/` 공개 컬렉션
+
+> FR-W1의 `attach_assets` 를 더해 Community 표면은 실제로 **7개**다. 계약은 §3B.1 에 있다.
 
 > 범주 원칙(각 description에 baked-in):
 > **Reads are free. Contributions add evidence to review; they do not change the official record.**
@@ -123,7 +187,7 @@
       "name":{"type":"string","maxLength":120},"relationship":{"type":"string","maxLength":120}}},
     "provenance":{"type":"object","additionalProperties":false,"properties":{
       "date_or_period":{"type":"string","maxLength":60},"place":{"type":"string","maxLength":120}}},
-    "consent":{"enum":["private","research_only","public_anonymous","public_attributed"]} } }
+    "consent":{"enum":["private","public_anonymous","public_attributed"]} } }
 ```
 - annotations: `readOnly:false, destructive:false, idempotent:false, openWorld:false`
 - 서버는 항상 `authority:"submitted", status:"received"`로 저장. **agent가 `verified` 전달 불가.**
@@ -169,6 +233,10 @@
     "visibility":{"enum":["public","restricted","sealed"]},
     "limit":{"type":"integer","minimum":1,"maximum":100,"default":20} } }
 ```
+- **구현 인자는 `status` 하나다.** 컬렉션이 쓰지 않는 status 는 `invalid` 로 거부하고, 그 workspace가
+  실제로 쓰는 status 목록을 recovery 로 준다 **(V10-5)**. 종전에는 `{count:0}` 으로 답해서,
+  "그 상태인 유물이 없다" 와 "그런 상태는 없다" 가 구분되지 않았다. 어휘는 여기 적지 않고
+  컬렉션에서 읽으므로, 새 status 가 생겨도 이 검사가 그것을 거부하지 않는다.
 
 ### 3.3 `list_submissions` — LOW · read · **trust:untrusted**
 ```jsonc
@@ -182,6 +250,9 @@
 - 반환 community 콘텐츠는 외부 제출물이므로 응답에 `trust:"untrusted"`, compat `untrustedContentHint:true`.
 - **목록 행은 본문을 싣지 않는다.** triage에 필요한 것만 반환한다: `id`, `object_id`, `kind`, `title`, `consent`, `status`, `quotable`, `authority`, `created_at`. 원문은 `get_review_case`(카탈로그상 `get_evidence_detail`)로 읽는다. 본문을 아예 담지 않으므로 consent 제한이 목록을 통해 샐 수 없다.
 - 기본 `limit`은 **20**이다(§1.4의 유계성 규칙). 20행이 약 4.5K, 50행이면 약 11K가 되어 §1.4의 단건 예산과 혼동되기 쉬우므로, 목록은 유계성으로만 판정한다.
+- **구현 `status` 어휘는 `received` · `needs information` · `under review` · `reflected in label` · `closed`** 이며,
+  그 밖의 값은 빈 페이지가 아니라 `invalid` 다 **(V10-5)** — 빈 페이지는 "그런 상태가 없다"를
+  "그 상태인 기여가 없다"로 읽히게 한다.
 
 ### 3.4 `get_review_case` — LOW · read · **trust:untrusted**
 ```jsonc
@@ -200,6 +271,14 @@
 ```
 - **내부 검토용 연표 초안**만 반환(공식 timeline 미변경, 미저장). 출력: `{draft_events[],gaps[],conflicts[],unanswered_questions[]}`.
 - `compare_evidence`와 **의도·출력이 다름**(연표 구성 vs 관점별 대조) → 분리 유지.
+- **구현 현황 (MCP-E7).** 배포된 툴은 인자를 `evidence_ids` 로 받는다. 이 인자는 선언·설명만
+  되어 있고 **읽히지 않아서**, 무엇을 인용하든 저장된 연표 전체가 돌아왔다. 지금은 인용한
+  증거에 근거한 사건만 남기고 `cited_evidence_ids` 와
+  `events_not_resting_on_cited_evidence` 를 함께 반환한다. **공백(gap)은 인용과 무관하게
+  전부 유지한다** — 아무도 인용하지 않았다는 이유로 미해결 연도를 빼면 완결된 역사처럼
+  읽히고, 그것이 이 기록이 절대 유도해서는 안 되는 독해다. 인용이 없으면 종전대로 전체를
+  반환하고 `note` 가 그렇다고 밝힌다. 해석되지 않는 id 는 `propose_label_update` 와 같은
+  검사를 거쳐 `invalid` 로 거부된다.
 
 ### 3.6 `compare_evidence` — LOW · read · **trust:untrusted**
 ```jsonc
@@ -210,17 +289,34 @@
     "focus":{"enum":["date","place","ownership","identity","access","all"],"default":"all"} } }
 ```
 - 출력 분리: 직접 확인 / 출처 있는 주장 / 자료 간 충돌 / 미답 질문 / 공개·인용 제한.
+- **구현 인자는 `evidence_ids` 하나다**(`object_id`·`focus` 는 구현하지 않음). `minItems:2` 는
+  카탈로그에 선언되고 **서버가 강제한다 (V10-6)** — 종전에는 id 한 개짜리 호출이 자기 자신과의
+  비교로 답했고, 충돌 0건·counterpart 없음이 돌아오면서 비교가 일어나지 않았다는 말은
+  어디에도 없었다. 상한 초과 시 recovery 문구는 "`12` 이하로 보내라"이며, 종전의
+  "`12` 미만으로 보내라"는 상한 자체와 어긋나 있었다.
 
-### 3.7 `get_evidence_detail` — LOW · read · **trust:untrusted** ★신규★
-```jsonc
-{ "type":"object","additionalProperties":false,"required":["evidence_id"],
-  "properties":{ "evidence_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{3,64}$"} } }
-```
-- 개별 evidence 원문을 **consent·visibility에 따라 redaction**하여 반환. `research_only`/`private`은 직접 인용 불가로 표기하되 메타데이터는 노출.
+### 3.7 ~~`get_evidence_detail`~~ — **철회 · 구현하지 않음**
+
+> 이 절은 **설계 기록으로만 남긴다.** 배포본에 `get_evidence_detail` 은 없다.
+> 단건 evidence 조회가 메우려던 공백은 `get_review_case`(§3.4)가 이미 메우고 있었고 —
+> 케이스 한 건의 evidence 를 consent·visibility redaction 과 `sealed` 은닉까지 적용해
+> 돌려준다 — 같은 redaction 을 한 번 더 구현한 툴은 표면만 넓히고 답을 늘리지 않았다.
+> 아래 `sealed` 규칙은 **폐기되지 않았다.** `get_asset_detail`(§3B.3)이 그것을 그대로 따른다:
+> 다른 workspace 의 자산과 모든 `sealed` 자산은 존재하지 않는 id 와 **동일한** `invalid` 로 답한다.
+>
+> ```jsonc
+> { "type":"object","additionalProperties":false,"required":["evidence_id"],
+>   "properties":{ "evidence_id":{"type":"string","pattern":"^[A-Za-z0-9_-]{3,64}$"} } }
+> ```
+
+- **`compare_evidence` 의 계약 (EA-2).** 배포된 `compare_evidence` 는 `get_review_case` 와 한 핸들러를 공유하되
+  **계약은 하나다.** 인용 id 가 evidence 로 해석되지 않으면 review case 응답으로 넘어가지 않고
+  `invalid` + `field:"evidence_ids"` 로 거부한다. 종전에는 기여 id 를 넘기면 키 구성이 전혀 다른
+  review case 가 돌아왔고, 어느 계약으로 답했는지 알리는 필드도 없었다.
 - **`sealed`는 존재 자체를 숨긴다:** 존재하지 않는 ID와 **완전히 동일한** 응답을 반환해야 한다 — `{status:"invalid", field:"evidence_id", message:"No evidence with that id.", next, retryable:true}`. `policy:"sealed_hidden"` 같은 구별되는 거부를 반환하면 "그 ID에 sealed 자료가 있다"는 사실이 새어나가므로 금지. (sealed 접근 시도는 서버 audit log에만 별도 기록.)
 - 1.5K 응답 예산에서 case 요약(§3.4)과 원문 조회를 분리하는 목적.
 
-### 3.8 `save_label_draft` — LOW · **write** (개명: `draft_label`→)
+### 3.8 `draft_label` — LOW · **read** (~~개명: `save_label_draft`~~ 철회)
 ```jsonc
 { "type":"object","additionalProperties":false,"required":["object_id","body","assertions"],
   "properties":{
@@ -235,8 +331,19 @@
         "mode":{"enum":["verified_fact","attributed_claim","open_question"]},
         "refs":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":12}}}} } }
 ```
-- annotations: **`readOnly:false`**, `destructive:false`, `idempotent:false`, `openWorld:false`. (기존 `draft_label`의 `readOnlyHint:true`는 draft를 **저장**하므로 계약 모순 → 수정.)
-- 내부 draft만 저장, 공식 미공개이므로 risk=LOW. 각 assertion ref≥1; `open_question`은 경계 evidence≥2 또는 명시적 gap record 참조.
+- annotations: **`readOnly:true`**, `destructive:false`, `idempotent:true`, `openWorld:false`.
+- **개명이 철회된 이유.** 개명의 전제는 "이 툴이 draft 를 저장하므로 `readOnlyHint:true` 는
+  계약 모순"이었다. 그 전제가 틀렸다 — 구현된 `draft_label` 은 아무것도 쓰지 않고 초안 문자열과
+  assertion 을 **계산해서 돌려줄** 뿐이며, 저장은 `propose_label_update` 의 승인 스냅샷이 한다.
+  저장하지 않는 툴에 write 이름과 write annotation 을 붙이는 쪽이 오히려 모순이므로,
+  이름도 annotation 도 그대로 둔다. 위 스키마의 `body`·`assertions`·`draft_id` 는 저장을 전제한
+  설계이며 **구현되지 않았다.** 실제 인자는 `object_id`(required)와 `evidence_ids` 두 개다.
+- 공식 미공개이므로 risk=LOW. 각 assertion ref≥1; `open_question`은 경계 evidence≥2 또는 명시적 gap record 참조.
+- **구현 현황 (MCP-E7).** 배포된 `draft_label` 은 저장하지 않는 read 툴이며 `evidence_ids` 를
+  받는다. 이 인자 역시 선언만 되고 읽히지 않아, 초안은 언제나 그 유물의 증거 전체에
+  근거했다. 지금은 인용이 있으면 그 증거만으로 assertion 을 만들고 `rests_on` 을 함께
+  반환하며, 제안 단계와 같은 인용 검사를 거친다 — 초안이 `propose_label_update` 가 거부할
+  id 를 통과시키지 않는다.
 
 ### 3.9 `request_clarification` — MEDIUM · write
 ```jsonc
@@ -259,7 +366,7 @@
         "rationale":{"type":"string","maxLength":2000},
         "refs":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":24}}} } }
 ```
-- 정책: refs 비면 거부 · 전부 submitted면 거부+escalation · private/research_only 직접 인용 포함 시 거부 · `verified_fact`가 submitted-only면 거부 · 검증 근거 있어도 **HIGH → approval queue** · 승인 직전 draft snapshot hash 재비교.
+- 정책: refs 비면 거부 · 전부 submitted면 거부+escalation · private 직접 인용 포함 시 거부 · `verified_fact`가 submitted-only면 거부 · 검증 근거 있어도 **HIGH → approval queue** · 승인 직전 draft snapshot hash 재비교.
 - 즉시 게시 아님. `{status:"pending_approval", approval_id, next}` 반환.
 
 ### 3.11 `open_return_review` — HIGH · write · approval queue
@@ -290,6 +397,114 @@
 
 ---
 
+## 3A. `check_submission` · `request_clarification` 응답 (FR2-K1)
+
+큐레이터의 질문은 **활동 로그가 아니라 제출물에** 남고, 두 도구가 그것을 실어 나른다.
+
+- `check_submission` 은 **가장 최근 질문 원문**을 `curator_question` 으로 반환하고,
+  `questions_asked` 로 총 건수를, `next` 로 답하는 방법을 함께 준다.
+  최근 1건만 싣는 이유는 §1.4 의 단건 읽기 출력 예산(1800자) 때문이다 — 오래 이어진 검토가
+  이 응답을 예산 밖으로 밀지 않게 한다.
+- `request_clarification` 은 저장 후 `questions_asked` 를 돌려주고, 기여자가 읽을 수 있다는
+  사실을 `note` 로 말한다. **콘솔과 도구가 같은 곳에 쓴다** — 도구로 물은 질문도 기여자가
+  읽어야 하는 질문이기 때문이다.
+
+---
+
+## 3B. 자산 툴 (FR-W1) — Community 1 + Shared 2
+
+**어느 툴도 바이너리를 받지 않는다.** 업로드는 전용 라우트(`POST /api/assets`)가 처리해 `assets`
+레코드를 먼저 만들고, 툴은 `asset_ids` 만 주고받는다 (`RETURN_PLAN.md` §15.1). 툴 응답에
+`storage_key` 는 절대 포함되지 않는다.
+
+### 3B.1 `attach_assets` — MEDIUM · Community 전용
+
+```json
+{ "submission_id": {"type":"string"},
+  "asset_ids": {"type":"array","items":{"type":"string"}} }
+```
+
+- 이미 업로드된 자산을 **이 워크스페이스의 기여에** 연결한다. 자산은 기여의 `consent` 와 대상 유물을 상속한다.
+- **"자기 기여"가 아니다 (EA-5).** 이 문서가 그렇게 적고 있었지만 코드가 검사하는 것은 워크스페이스
+  경계뿐이다. 이 데모에는 개인 신원 모델이 없다 — 세션 하나가 워크스페이스 하나이고, 기여에
+  작성자 식별자가 없다. 강제할 수 없는 것을 강제한다고 적어두는 쪽이 더 나쁘므로 문구를 코드에
+  맞췄다. 소유권을 실제로 걸려면 세션 소유자를 기여에 기록하고 대조해야 하며, 그것은 기능 추가다
+- `visibility` 는 건드리지 않는다. 첨부해도 `restricted` 로 남으며, 공개는 큐레이터의 행위다.
+- 이미 다른 기여에 붙은 id 는 매칭되지 않는다. 그래서 `attached` 가 `requested` 보다 작게 돌아올 수 있고,
+  이것이 남의 기여에 파일을 밀어 넣지 못하게 하는 방식이다.
+- **하나도 붙지 않으면 `invalid` + `field:"asset_ids"` 로 거부한다.** 종전에는 `attached:0` 을 담은 채
+  `applied` 로 답해서, 에이전트가 실패를 성공으로 읽었다 (MCP-E3).
+- 일부만 붙으면 `applied` 이되 **`omitted_asset_ids`** 로 실패한 id 를 이름으로 돌려준다.
+  `compare_evidence` 의 `omitted_evidence_ids` 와 같은 규약이다.
+- **`attached` 와 `omitted_asset_ids` 는 같은 질문에 답한다 (F4-3)** — 지금 이 기여에 올라와
+  있는가. 따라서 항상 `attached + omitted_asset_ids.length === requested` 다. 이미 붙어 있던
+  파일도 `attached` 에 든다. 종전에는 `attached` 가 UPDATE 가 바꾼 행 수여서, 재첨부가
+  `attached:0` 에 누락도 없는 상태로 돌아왔다.
+- 응답: `attached` · `requested` · `total_on_contribution` · `visibility:"restricted"` · (해당 시) `omitted_asset_ids`.
+
+### 3B.2 `list_object_assets` — LOW · read · Shared
+
+```json
+{ "object_id": {"type":"string"} }
+```
+
+- 한 유물에 붙은 자산 목록을 `assetAccess` 로 걸러 반환한다.
+- `restricted` 는 **개수만** `withheld_count` 로 알린다 — 무언가가 보류돼 있다는 사실은 정직하게 밝히되,
+  그것이 무엇인지는 밝히지 않는다.
+- `sealed` 는 `withheld_count` 에도 포함되지 않는다. 개수 자체가 존재의 누설이기 때문이다 (§5.3).
+  큐레이터 표면에서도 마찬가지다 — sealed 는 인간 절차로만 열린다.
+- `untrusted_content: true`.
+
+### 3B.3 `get_asset_detail` — LOW · read · Shared
+
+```json
+{ "asset_id": {"type":"string"} }
+```
+
+- 자산 하나의 메타데이터. **파일 내용은 반환하지 않는다.**
+- `sealed` 와 타 워크스페이스 자산은 존재하지 않는 id 와 **동일한 응답**(`invalid`)을 준다.
+  403 은 그 자체로 존재의 확인이 되기 때문이다.
+- 권한이 없는 자산의 거부는 **막은 관문의 이름을 그대로 쓴다 (V10-4).** `assetAccess` 의 관문은
+  visibility 와 consent 로 나뉘므로 거부도 둘로 나뉜다:
+  - consent 가 `private` → `denied` + `policy:"consent_not_public"` → "어느 동의 수준인지 물어라"
+  - consent 는 공개 가능하나 아직 `restricted` → `denied` + `policy:"visibility_restricted"` → "큐레이터에게 공개를 요청하라"
+
+  종전에는 두 경우 모두 `consent_not_public` 이었다. 흔한 쪽은 두 번째 —
+  기여자가 `public_attributed` 로 올렸지만 큐레이터가 아직 공개하지 않은 자산 — 이라서,
+  에이전트가 **이미 갖고 있는** 동의를 받으러 갔다가 같은 거부로 돌아왔다.
+- 거부는 dead end 가 아니다 (§9.6).
+
+---
+
+## 3C. `register_object` (FR-K5 · FR-X3) — HIGH · Curator 전용
+
+```json
+{ "title": {"type":"string"}, "accession": {"type":"string"}, "basis": {"type":"string"},
+  "period": {"type":"string"}, "material": {"type":"string"}, "origin": {"type":"string"},
+  "evidence_ids": {"type":"array","items":{"type":"string"}} }
+```
+
+**결정 (FR-X3):** 새 유물 등록은 커뮤니티에 노출하지 않는다. 큐레이터 UI와 큐레이터 도구
+표면 양쪽에서 가능하되, **도구는 제안만 하고 기록을 만들지 않는다.**
+
+- 위험 등급 **HIGH**. 새 유물은 공식 기록을 만드는 행위이므로 `publish_label` 과 같은 칸에 선다
+- `open_return_review` 도 같은 등급이며, `basis` 없이는 진행하지 않는다 (F4-1)
+- **accession 중복은 제안 단계에서 거부한다 (EA-3).** `objects` 에 유니크 인덱스가 있고 등록
+  라우트가 409 를 돌려주므로, 이미 쓰이는 번호를 담은 제안은 실패가 확정돼 있다. 종전에는 제목
+  slug 만 검사해서 그 제안이 큐레이터 큐까지 갔고, 사람이 실행하려는 순간에야 막혔다
+- 검증된 근거가 있으면 `pending_approval` + 제안이 큐에 남고, 응답은 `created:false` 를 명시한다
+- submitted 자료만 인용하면 `submitted_sole_authority` 로 거부하고 escalation 을 만든다
+- **아무 증거도 인용하지 않으면 `no_supporting_evidence`** 로 거부한다. 인용이 0건인 호출에
+  "제출된 증거는 단독 권위가 될 수 없다" 고 답하는 것은 사실이 아니고, 호출자를 있지도 않은
+  인용을 고치러 보낸다 (MCP-E4)
+- 제안은 **approval 이 아니라 escalation 큐**에 들어간다. approval 계약(A4)은 불변 라벨
+  스냅샷이고 제안된 기록은 그 형태가 아니다. escalation 은 이미 tool·args·큐레이터 조치를 담는다
+- 실제 생성은 `POST /api/curator/objects` 가 하며, `confirmed: true` 없이는 409 로 거부한다.
+  HIGH 판정이 인간 행위자에게 뜻하는 바가 "명시적 결정"이므로, 폼을 채우는 것만으로는 기록이
+  생기지 않는다
+
+---
+
 ## 4. 원래 18개 대비 변경 이력
 
 | 구분 | 변경 | 사유 |
@@ -307,15 +522,79 @@
 
 ## 5. Eval 수용 게이트 & 안전 밸브
 
-계약 정리 후 대표 WebMCP eval에서 아래를 만족하면 현행 surface 유지:
-- 툴 선택 + **필수 인자** 정확도 **≥ 95%**
-- 인접(유사) 툴 혼동율 **≤ 2%**
-- 툴 정의 토큰 예산 충족(정의당 100–500 토큰 수준)
+게이트는 세 조항이고, **둘은 카탈로그의 성질이라 지금 측정되며, 하나는 모델의 성질이라
+모델 실행이 필요하다.** 이 구분을 흐리지 않는다.
 
-**실패 시**(위 미달): Curator surface를 **단계별 동적 노출 7–9개**로 축소한다 — 예: 기본 노출 = summary/list_objects/list_submissions/get_review_case/get_evidence_detail/compare_evidence/save_label_draft, 승인·검토 개시(propose_label_update/open_return_review/check_approval/list_pending_approvals)는 case 진입 후 lazy 등록. "고정 개수 절벽"이 아니라 중복도·설명 품질·컨텍스트 비용으로 판단한다. (출처: [Anthropic — Advanced tool use](https://www.anthropic.com/engineering/advanced-tool-use))
+```bash
+npm run eval:tools                                  # 정적 게이트
+npm run eval:tools -- --prompts                     # 7개 시나리오 프롬프트
+npm run eval:tools -- --score answers.json          # 모델이 실제 호출한 것을 채점
+```
+
+정적 절반은 `lib/webmcp/eval.ts`에 있고 단위 테스트로도 돈다. 도구가 하나 추가될 때마다
+조용히 나빠지는 종류의 값이라, 릴리스 직전이 아니라 매 테스트에서 확인한다.
+
+### 5.1 측정된 값 (FR-W1·FR-K5 이후 22개 기준)
+
+| 조항 | 목표 | 측정 | 판정 |
+|---|---|---|---|
+| 정의당 컨텍스트 비용 | ≤ 500 토큰 | **23–162** (추정) | 통과 |
+| 표면당 등록 비용 | — | Community 9개 **~647** · Curator 15개 **~1035** | 통과 |
+| 인접 툴 유사도 | < 0.5 | 최고 **0.227** (`get_object_detail` ↔ `get_provenance_timeline`) | 통과 |
+| 툴 선택 + 필수 인자 정확도 | ≥ 95% | **미측정** | 모델 실행 필요 |
+| 인접 툴 혼동율 | ≤ 2% | **미측정** | 모델 실행 필요 |
+
+§0이 지목했던 위험 쌍은 모두 낮게 나왔다. 실제로 가장 가까운 것은 HIGH 3종
+(`propose_label_update` 0.222 `open_return_review`, 0.182 `register_object`)인데,
+셋 다 `evidence_ids`를 받고 셋 다 공식 기록을 건드리니 어휘가 겹치는 것이 당연하다.
+그래도 0.5와는 거리가 멀다.
+
+### 5.2 토큰 하한을 걷어낸 이유
+
+이 문서는 원래 정의당 **100–500 토큰**을 요구했다. 실측하면 22개 중 **4개만** 100을 넘는다.
+
+`list_pending_approvals`는 23토큰이다 — "List unresolved consequential actions awaiting a
+human curator." 에 파라미터가 없다. 이걸 100토큰으로 만들려면 아무 정보도 더하지 않는 말을
+채워야 하고, 그건 선택 정확도를 **떨어뜨린다.** 신호를 희석하기 때문이다.
+
+하한이 잡으려던 것은 "고를 수 없을 만큼 빈약한 정의"였으므로, 그것을 직접 잰다:
+
+- 설명은 **8단어 이상의 완결된 문장**이어야 한다
+- 같은 표면의 두 도구는 서로 닮아서는 안 된다 (§5.1의 유사도)
+- **쓰기 도구는 자기가 하지 *않는* 일을 말해야 한다.** `not` / `never` / `without` /
+  `review` / `approval` 중 하나가 설명에 있어야 통과한다. 에이전트가 자기 호출을 최종적이라
+  믿는 것이 이 제품이 막으려는 실패다
+
+셋 다 단위 테스트다. 상한(500)은 컨텍스트 비용에 대한 진짜 제약이므로 그대로 둔다.
+
+### 5.3 실패 시 안전 밸브
+
+**모델 실행이 미달하면**: Curator surface를 **단계별 동적 노출 7–9개**로 축소한다 —
+기본 노출 = summary / list_objects / list_submissions / get_review_case / compare_evidence /
+draft_label, 승인·검토 개시(`propose_label_update` · `open_return_review` · `check_approval` ·
+`list_pending_approvals` · `register_object`)는 case 진입 후 lazy 등록. 자산 읽기 2종은
+유물 화면에서만 등록한다.
+
+"고정 개수 절벽"이 아니라 중복도·설명 품질·컨텍스트 비용으로 판단한다.
+(출처: [Anthropic — Advanced tool use](https://www.anthropic.com/engineering/advanced-tool-use))
+
+### 5.4 시나리오 7종
+
+`RETURN_PLAN.md` §20.3의 프롬프트를 `lib/webmcp/eval.ts`의 `EVAL_SCENARIOS`에 채점 가능한
+형태로 고정했다. 각 항목은 프롬프트·기대 도구·기대 필수 인자·**decoy**(혼동한 모델이 대신
+집을 법한 같은 표면의 도구)를 가진다. decoy가 있어야 혼동율이 계산된다.
+
+| id | 역할 | 재는 것 |
+|---|---|---|
+| `gap-search` | community | 컬렉션 전체 질문을 단건 읽기로 착각하지 않는가 |
+| `photo-to-object` | community | 자료를 내밀기 전에 대상을 먼저 찾는가 |
+| `submit-evidence` | community | 주장이 아닌 자료로 다루고 consent를 함께 싣는가 |
+| `triage-batch` | curator | 목록·단건·집계를 구분하는가 |
+| `draft-label` | curator | 초안이 제안으로 넘어가지 않는가 |
+| `denied-recovery` | curator | 게이트웨이 거부 후 같은 호출을 반복하지 않고 `next`를 따르는가 |
+| `approval-polling` | curator | 아는 id면 조회, 폴링이 다른 작업을 막지 않는가 |
 
 ---
-
 ## 6. 구현 타당성 검토 (Implementation feasibility)
 
 실제 `return/` 코드와 대조해 구현 시 걸릴 지점과 처리 방침을 정리한다.

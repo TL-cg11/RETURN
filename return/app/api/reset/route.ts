@@ -1,7 +1,8 @@
 import { ensureDatabase } from '@/db/setup';
 import { appendSessionCookies, sessionCookieHeaders, sessionFromRequest } from '@/lib/session';
+import { guarded } from '@/lib/http/input';
 
-export async function POST(request: Request) {
+export const POST = guarded(async (request: Request) => {
   const current = await sessionFromRequest(request);
   const museumId = `museum_${crypto.randomUUID()}`;
   const session = { role: current.role, museumId };
@@ -12,4 +13,4 @@ export async function POST(request: Request) {
     return Response.json({ museumId, reset: true, persisted: false }, { headers });
   }
   return Response.json({ museumId, reset: true, persisted: true }, { headers });
-}
+});

@@ -1,20 +1,29 @@
 import { NavLink as Link } from '@/components/shared/nav-link';
 import { CommunityHeader } from '@/components/shared/community-header';
+import { CollectionBrowser } from '@/components/community/collection-browser';
 import { collectionFor } from '@/lib/records';
 import { sessionFromCookies } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
-export default async function Home() {
-  const { museumId } = await sessionFromCookies();
+// FR-M4 — the collection was rendered whole. Eight objects fit on one screen; a real
+// collection does not, and FR-K5 lets a curator add to it. Server-rendered `?page=`
+// links, matching the inbox filter and the activity log, so there is no client state.
+const PER_PAGE = 6;
+
+export default async function Home({ searchParams }: { searchParams: Promise<{ page?: string }> }) {
+  const { page } = await searchParams;
+  const { museumId, role } = await sessionFromCookies();
   const collection = await collectionFor(museumId);
   const moonbird = collection.find((object) => object.id === 'moonbird-mask') ?? collection[0];
   if (!moonbird) return null;
   const gaps = collection.filter((object) => object.gap).length;
+  const pageCount = Math.max(1, Math.ceil(collection.length / PER_PAGE));
+  const current = Math.min(Math.max(1, Number(page) || 1), pageCount);
 
   return (
-    <main>
-      <CommunityHeader />
+    <main id="main" tabIndex={-1}>
+      <CommunityHeader role={role} />
 
       <section className="hero" aria-labelledby="hero-title">
         <div className="hero-copy">
@@ -51,17 +60,7 @@ export default async function Home() {
           <div><p className="eyebrow">The collection</p><h2 id="collection-title">The collection is still being written.</h2></div>
           <p>Each record shows what is known, what is attributed, and what remains an open question.</p>
         </div>
-        <div className="object-list">
-          {collection.map((object, index) => (
-            <Link className="object-row" href={`/objects/${object.id}`} key={object.id}>
-              <span className="object-number">{String(index + 1).padStart(2, '0')}</span>
-              <span className={`object-thumbnail ${object.tone}`} aria-hidden="true"><i /></span>
-              <span className="object-name"><strong>{object.title}</strong><small>{object.date}</small></span>
-              <span className="object-note">{object.gap ? `Unrecorded ${object.gap}` : object.status}</span>
-              <span className="row-arrow" aria-hidden="true">↗</span>
-            </Link>
-          ))}
-        </div>
+        <CollectionBrowser collection={collection} initialPage={current} perPage={PER_PAGE} />
       </section>
 
       <section className="principle" id="about">

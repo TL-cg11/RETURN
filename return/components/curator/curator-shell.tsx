@@ -2,11 +2,13 @@
 
 import { NavLink as Link } from '@/components/shared/nav-link';
 import { usePathname, useRouter } from 'next/navigation';
-import { ReactNode, useEffect, useRef, useState } from 'react';
-import { registerWebMcpTools } from '@/lib/webmcp/register';
+import { ReactNode, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { modelContextStatus, registerWebMcpTools } from '@/lib/webmcp/register';
 import { useLiveRecord } from '@/lib/live/use-live-record';
-import { curatorTools } from '@/lib/webmcp/tools';
+import { communityTools, curatorTools } from '@/lib/webmcp/tools';
 import { diffLabelText } from '@/lib/label-diff';
+import { MAX_TEXT } from '@/lib/domain/types';
+import { LimitedTextarea } from '@/components/shared/limited-field';
 
 export type PendingApproval = {
   id: string; objectId: string; objectTitle: string; currentLabel: string;
@@ -27,16 +29,49 @@ const RISK_LADDER = [
   ['CRITICAL', 'Delete evidence, transfer custody', 'Never available to an agent'],
 ] as const;
 
+/**
+ * FR-K1 — the collapsed navigation state.
+ *
+ * Kept outside React because navigation here is a full page load (see
+ * components/shared/nav-link.tsx), so component state would reset on every click.
+ * Read through `useSyncExternalStore` rather than an effect: the server snapshot is
+ * `false`, so the markup matches on hydration and no state is set during an effect.
+ * The `storage` event keeps two open console tabs in agreement.
+ */
+const NAV_KEY = 'console-nav';
+const NAV_EVENT = 'console-nav-change';
+
+function readNavCollapsed() {
+  try { return localStorage.getItem(NAV_KEY) === 'collapsed'; } catch { return false; }
+}
+
+function subscribeNav(onChange: () => void) {
+  window.addEventListener(NAV_EVENT, onChange);
+  window.addEventListener('storage', onChange);
+  return () => {
+    window.removeEventListener(NAV_EVENT, onChange);
+    window.removeEventListener('storage', onChange);
+  };
+}
+
 export function CuratorShell({
-  children, approval, pendingCount, submissionCount,
+  children, approvals, submissionCount,
 }: {
-  children: ReactNode; approval: PendingApproval | null; pendingCount: number; submissionCount: number;
+  children: ReactNode; approvals: PendingApproval[]; submissionCount: number;
 }) {
   const path = usePathname();
   const router = useRouter();
   const [drawer, setDrawer] = useState(false);
+  // Which of the pending approvals the drawer shows. Null means the head of the queue,
+  // so the top-bar trigger behaves exactly as it always did.
+  const [openedId, setOpenedId] = useState<string | null>(null);
+  const pendingCount = approvals.length;
+  // Falls back to the head of the queue, so the top-bar trigger and a first render both
+  // land on something sensible without a separate default.
+  const approval = approvals.find((item) => item.id === openedId) ?? approvals[0] ?? null;
   const [panel, setPanel] = useState<'tools' | 'policy' | null>(null);
-  const [mcpAvailable, setMcpAvailable] = useState<boolean | null>(null);
+  const collapsed = useSyncExternalStore(subscribeNav, readNavCollapsed, () => false);
+  const [mcp, setMcp] = useState<{ available: boolean; legacy: boolean } | null>(null);
   const [draft, setDraft] = useState(approval?.snapshot ?? '');
   const [resolved, setResolved] = useState('');
   const [error, setError] = useState('');
@@ -44,6 +79,11 @@ export function CuratorShell({
   const labelDiff = approval ? diffLabelText(approval.currentLabel, draft) : [];
 
   useEffect(() => registerWebMcpTools('curator'), []);
+
+  function toggleNav() {
+    try { localStorage.setItem(NAV_KEY, collapsed ? 'open' : 'collapsed'); } catch { /* storage may be unavailable */ }
+    window.dispatchEvent(new Event(NAV_EVENT));
+  }
   const liveTransport = useLiveRecord();
 
   // Reset the editable draft when a different approval arrives, during render
@@ -56,10 +96,21 @@ export function CuratorShell({
   }
 
   useEffect(() => {
-    const open = () => setDrawer(true);
+    // A case screen names the record it wants by object id. Without that the drawer
+    // opens whatever happens to be first in the queue, which is a different record's
+    // label revision (FR2-K2).
+    const open = (event: Event) => {
+      const wanted = (event as CustomEvent<{ objectId?: string }>).detail?.objectId;
+      if (wanted) {
+        const match = approvals.find((item) => item.objectId === wanted);
+        if (!match) return;
+        setOpenedId(match.id);
+      }
+      setDrawer(true);
+    };
     window.addEventListener('open-approval', open);
     return () => window.removeEventListener('open-approval', open);
-  }, []);
+  }, [approvals]);
 
   useEffect(() => {
     if (!drawer) return;
@@ -79,13 +130,17 @@ export function CuratorShell({
     return () => document.removeEventListener('keydown', keyboard);
   }, [drawer]);
 
+  // Both of these used to navigate whether or not the write landed, so a failure looked
+  // like the button had done nothing — or worse, like it had worked (F6-8).
   async function switchToCommunity() {
-    await fetch('/api/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ role: 'community' }) });
+    const response = await fetch('/api/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ role: 'community' }) }).catch(() => null);
+    if (!response?.ok) { setError('Could not switch to the community view. Try again.'); return; }
     location.href = '/';
   }
 
   async function resetWorkspace() {
-    await fetch('/api/reset', { method: 'POST' });
+    const response = await fetch('/api/reset', { method: 'POST' }).catch(() => null);
+    if (!response?.ok) { setError('The workspace could not be reset. Try again.'); return; }
     location.href = '/curator';
   }
 
@@ -101,11 +156,17 @@ export function CuratorShell({
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
-    const data = await response.json().catch(() => null) as { resolution?: string; reason?: string; next?: string } | null;
+    const data = await response.json().catch(() => null) as { resolution?: string; reason?: string; recovery?: string; next?: string } | null;
     if (!response.ok) {
       // The gateway explains why it refused and what to do next. Say both rather
       // than replacing a real answer with a generic failure.
-      setError(data?.reason ? [data.reason, data.next].filter(Boolean).join(' ') : 'Could not save this decision.');
+      //
+      // `recovery` first: this read only `next`, which the route's own helper sets but
+      // the shared reader does not, so the three refusals V7-1 added to this drawer —
+      // a label past the ceiling, a non-text label, an emptied editor — showed the
+      // reason with the sentence saying what to do about it missing (V7-11). The other
+      // two consoles already read `recovery`; this one was the odd surface out.
+      setError(data?.reason ? [data.reason, data.recovery ?? data.next].filter(Boolean).join(' ') : 'Could not save this decision.');
       return;
     }
     setResolved(data?.resolution ?? (decision === 'reject' ? 'rejected' : 'approved'));
@@ -113,21 +174,25 @@ export function CuratorShell({
   }
 
   return (
-    <div className="console-shell">
+    <div className={`console-shell${collapsed ? ' nav-collapsed' : ''}`}>
       <header className="console-topbar">
         <Link className="wordmark inverse" href="/curator">RE<span>:</span>TURN</Link>
         <div className="console-context"><b>Halcyon Museum</b><span>Curatorial workspace</span></div>
         <div className="console-actions">
-          <button type="button" className="approval-trigger" onClick={() => setDrawer(true)} disabled={!approval}>
+          <button type="button" className="approval-trigger" onClick={() => { setOpenedId(null); setDrawer(true); }} disabled={!approval}>
             <i>{pendingCount}</i> {approval ? 'Pending approval' : 'No pending approval'}
           </button>
           <button type="button" className="role-switch dark" onClick={switchToCommunity}>Community view ↗</button>
-          <span className="avatar">MK</span>
+          <span className="avatar">NZ</span>
         </div>
       </header>
 
       <aside className="console-nav">
-        <div>
+        <button type="button" className="nav-collapse" onClick={toggleNav} aria-expanded={!collapsed} aria-controls="console-nav-items" title={collapsed ? 'Expand navigation' : 'Collapse navigation'}>
+          <span aria-hidden="true">{collapsed ? '»' : '«'}</span>
+          <em>{collapsed ? 'Expand' : 'Collapse'}</em>
+        </button>
+        <div id="console-nav-items">
           <small>Workspace</small>
           {NAV.map((item) => (
             <Link className={path === item.href ? 'active' : ''} href={item.href} key={item.href}>
@@ -143,14 +208,18 @@ export function CuratorShell({
             type="button"
             onClick={() => {
               // Read the browser surface as the panel opens, so the status
-              // reflects this session rather than a stale render.
-              setMcpAvailable(typeof document !== 'undefined' && !!document.modelContext);
+              // reflects this session rather than a stale render. Asked of the
+              // registrar, so the panel cannot disagree with what it did.
+              setMcp(modelContextStatus());
               setPanel(panel === 'tools' ? null : 'tools');
             }}
           >
             <span>⌘</span>WebMCP tools <b className="tool-count">{curatorTools.length}</b>
           </button>
           <button type="button" onClick={resetWorkspace}><span>↺</span>Fresh workspace</button>
+          {/* A failed switch or reset used to navigate anyway, or do nothing visible. The
+              sidebar is where those two buttons are, so it is where their answer belongs. */}
+          {error && <p className="console-error" role="alert">{error}</p>}
         </div>
         <p>Demo workspace<br /><strong>Fictional collection</strong></p>
       </aside>
@@ -165,7 +234,14 @@ export function CuratorShell({
               <div>
                 <p className="risk-label">{panel === 'tools' ? 'Agent surface' : 'Server-side enforcement'}</p>
                 <h2 id="panel-title">{panel === 'tools' ? 'WebMCP tools in this session' : 'Policy gateway'}</h2>
-                <span>{panel === 'tools' ? `${curatorTools.length} curator tools registered` : 'Every consequential call passes through it'}</span>
+                {/* The count is the catalogue; "registered" is a claim about this
+                    browser. Saying both as one sentence stated that 15 tools were
+                    registered directly above the line explaining that none were. */}
+                <span>{panel === 'tools'
+                  ? mcp?.available
+                    ? `${curatorTools.length} curator tools registered in this browser`
+                    : `${curatorTools.length} curator tools on this surface · none registered in this browser`
+                  : 'Every consequential call passes through it'}</span>
               </div>
               <button type="button" onClick={() => setPanel(null)} aria-label="Close">×</button>
             </header>
@@ -173,10 +249,12 @@ export function CuratorShell({
             {panel === 'tools' ? (
               <section>
                 <p className="mcp-status">
-                  <i className={mcpAvailable ? 'verified-dot' : 'question-dot'} />
-                  {mcpAvailable
-                    ? 'document.modelContext is available — these tools are live in this browser.'
-                    : 'document.modelContext is not exposed by this browser, so nothing is registered here. The same tools stay reachable over /api/tools/.'}
+                  <i className={mcp?.available ? 'verified-dot' : 'question-dot'} />
+                  {mcp?.available
+                    ? mcp.legacy
+                      ? 'navigator.modelContext is available — these tools are live in this browser, on the deprecated getter.'
+                      : 'document.modelContext is available — these tools are live in this browser.'
+                    : 'Neither document.modelContext nor navigator.modelContext is exposed by this browser, so nothing is registered here. The same tools stay reachable over /api/tools/.'}
                 </p>
                 <p className="mcp-status">
                   <i className={liveTransport === 'stream' ? 'verified-dot' : 'question-dot'} />
@@ -186,7 +264,10 @@ export function CuratorShell({
                       ? 'Live record: polling every 2s. The stream was unavailable, so this surface falls back to asking.'
                       : 'Live record: connecting…'}
                 </p>
-                <p>These tools are registered on the curator surface only. Community pages register a different set of six. The server re-checks the role on every call.</p>
+                {/* Counted from the catalogue. This said "six" while the community surface
+                    registered nine — a wrong number in the panel whose job is to report the
+                    surface honestly (F6-6). */}
+                <p>These tools are registered on the curator surface only. Community pages register a different set of {communityTools.length}. The server re-checks the role on every call.</p>
                 <ul className="tool-list">
                   {curatorTools.map((tool) => (
                     <li key={tool.name}>
@@ -234,6 +315,23 @@ export function CuratorShell({
               <button type="button" onClick={() => setDrawer(false)} aria-label="Close">×</button>
             </header>
 
+            {/* FR2-K3 — every waiting approval is reachable, not only the first. A badge
+                that says two and a drawer that opens one is a drawer lying about the queue. */}
+            {pendingCount > 1 && (
+              <nav className="approval-queue" aria-label="Approvals awaiting review">
+                <span>{pendingCount} awaiting review</span>
+                {approvals.map((item, index) => (
+                  <button
+                    type="button" key={item.id}
+                    className={item.id === approval.id ? 'active' : ''}
+                    aria-current={item.id === approval.id ? 'true' : undefined}
+                    title={`${item.id} · ${item.objectTitle}`}
+                    onClick={() => setOpenedId(item.id)}
+                  >{index + 1}. {item.objectTitle}</button>
+                ))}
+              </nav>
+            )}
+
             {resolved ? (
               <div className="resolved-state">
                 <span>✓</span>
@@ -269,7 +367,10 @@ export function CuratorShell({
                     </article>
                   </div>
                   <label className="approval-editor-label" htmlFor="approval-draft">Curator edit</label>
-                  <textarea id="approval-draft" rows={6} value={draft} onChange={(event) => setDraft(event.target.value)} />
+                  {/* A curator editing here publishes straight to the public record, and
+                      this box had no ceiling at all: six thousand characters past the one
+                      `propose_label_update` enforces went out as a public label (V7-1). */}
+                  <LimitedTextarea id="approval-draft" rows={6} value={draft} max={MAX_TEXT.draft} onValueChange={setDraft} />
                   {draft !== approval.snapshot && <p className="restriction-note">Edited. This will be recorded as approve-with-edit.</p>}
                 </section>
                 {error && <p className="clarify-result" role="alert">{error}</p>}

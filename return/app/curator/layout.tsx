@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation';
 import type { ReactNode } from 'react';
-import { listApprovals, listSubmissions } from '@/db/queries';
+import { countSubmissions, listApprovals } from '@/db/queries';
 import { CuratorShell, type PendingApproval } from '@/components/curator/curator-shell';
 import { objectRecord } from '@/lib/records';
 import { sessionFromCookies } from '@/lib/session';
@@ -12,24 +12,25 @@ export default async function CuratorLayout({ children }: { children: ReactNode 
   // The workspace is curator-only. A community session is told nothing about it,
   // the same answer an unknown record gets.
   if (role !== 'curator') notFound();
-  const [pending, submissions] = await Promise.all([
+  const [pending, submissionCount] = await Promise.all([
     listApprovals(museumId, 'pending'),
-    listSubmissions(museumId),
+    countSubmissions(museumId),
   ]);
 
-  const first = pending[0];
-  const record = first ? await objectRecord(museumId, first.object_id, 'curator') : null;
-  const approval: PendingApproval | null = first ? {
-    id: first.id,
-    objectId: first.object_id,
-    objectTitle: record?.title ?? first.object_id,
-    currentLabel: record?.label ?? '',
-    snapshot: first.snapshot,
-    objectVersion: first.object_version,
-  } : null;
+  // The whole queue, not just its head. A badge that says two and a drawer that can
+  // only ever open one is a drawer that lies about the queue (FR2-K3).
+  const records = await Promise.all(pending.map((row) => objectRecord(museumId, row.object_id, 'curator')));
+  const approvals: PendingApproval[] = pending.map((row, index) => ({
+    id: row.id,
+    objectId: row.object_id,
+    objectTitle: records[index]?.title ?? row.object_id,
+    currentLabel: records[index]?.label ?? '',
+    snapshot: row.snapshot,
+    objectVersion: row.object_version,
+  }));
 
   return (
-    <CuratorShell approval={approval} pendingCount={pending.length} submissionCount={submissions.length}>
+    <CuratorShell approvals={approvals} submissionCount={submissionCount}>
       {children}
     </CuratorShell>
   );

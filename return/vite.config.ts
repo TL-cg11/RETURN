@@ -7,6 +7,15 @@ import hostingConfig from './.openai/hosting.json';
 const D1_DATABASE_NAME = 'return-museum';
 const D1_DATABASE_ID = 'f4e676f8-afda-4a62-bd79-be51b6ffdcc3';
 
+// Contribution and record assets (FR-D1). The binding is always present so the
+// upload path behaves identically in local Miniflare and on Cloudflare.
+//
+// `return-assets` is the bucket this project deploys against, named to pair with the
+// D1 database above. The override exists for a second account or a staging bucket,
+// not because the name is undecided.
+const MEDIA_BINDING = 'MEDIA';
+const MEDIA_BUCKET_NAME = process.env.R2_ASSET_BUCKET ?? 'return-assets';
+
 const { d1, r2 } = hostingConfig;
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
@@ -24,14 +33,10 @@ const localBindingConfig = {
         },
       ]
     : [],
-  r2_buckets: r2
-    ? [
-        {
-          binding: r2,
-          bucket_name: 'site-creator-r2',
-        },
-      ]
-    : [],
+  r2_buckets: [
+    { binding: MEDIA_BINDING, bucket_name: MEDIA_BUCKET_NAME },
+    ...(r2 ? [{ binding: r2, bucket_name: 'site-creator-r2' }] : []),
+  ],
 };
 
 export default defineConfig(async () => {
