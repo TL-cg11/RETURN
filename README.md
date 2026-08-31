@@ -45,13 +45,13 @@ The project runs against a local D1 binding in development. Useful checks:
 
 ```bash
 npm run verify      # lint, typecheck, 161 unit tests, production build
-npm run test:smoke  # 414 end-to-end checks against a running server
+npm run test:smoke  # 418 end-to-end checks against a running server
 npm run eval:tools  # WebMCP acceptance gate: context cost and tool confusability
 ```
 
 `test:smoke` exercises every page route, all 23 WebMCP tools, the asset pipeline, the role
 boundary, the four policy outcomes, approve-with-edit, the contribution flow, and the fresh-workspace
-reset. Adding `--limits` runs three further checks that flood the write ceiling (417 in total);
+reset. Adding `--limits` runs three further checks that flood the write ceiling (421 in total);
 they are held behind the flag because the flood slows everything after it. Start `npm run dev` first, then point it at that server:
 `npm run test:smoke -- http://localhost:3000`.
 

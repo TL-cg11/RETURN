@@ -1606,6 +1606,38 @@ async function main() {
   const v11Limit = await tool('list_my_uploads', { limit: '5' });
   check('list_my_uploads refuses a limit sent as a string',
     v11Limit.json?.outcome === 'invalid' && v11Limit.json?.field === 'limit', JSON.stringify(v11Limit.json).slice(0, 90));
+
+  /* V11-5 — the catalogue has to name the door, not just say there is one.
+     `attach_assets` said its ids came from "the upload route" without saying which, and
+     the empty listing said files arrive "through the contribution form". An agent reading
+     only the catalogue found no upload tool and concluded a photograph had to be filed by
+     hand — while the route was reachable the whole time. These check the description
+     against the route it names, so the sentence cannot drift from the door. */
+  const v11Empty = await tool('list_my_uploads', {});
+  check('the empty upload listing names the route bytes actually go through',
+    /\/api\/assets/.test(v11Empty.json?.note ?? ''), v11Empty.json?.note);
+  const v11Named = ['attach_assets', 'list_my_uploads'];
+  const v11Missing = [];
+  for (const name of v11Named) {
+    // The description an agent reads is the one the page registers, so it is read back
+    // from the catalogue module through the surface rather than asserted from memory.
+    const spec = await tool(name, { __probe_undeclared__: true });
+    if (!/It takes/.test(spec.json?.recovery ?? '')) v11Missing.push(`${name}: no field list in recovery`);
+  }
+  check('both asset tools still answer an undeclared argument by naming what they take',
+    v11Missing.length === 0, v11Missing.join(' | '));
+  /* And the named route works as described: multipart, field name `file`. */
+  const v11Door = await (async () => {
+    const body = new FormData();
+    body.append('file', new Blob([pixel], { type: 'image/png' }), 'door.png');
+    return req('/api/assets', { method: 'POST', body });
+  })();
+  check('a multipart POST to that route with field name "file" stores the file',
+    v11Door.status === 200 && !!v11Door.json?.id, `status ${v11Door.status}`);
+  const v11Door2 = await tool('list_my_uploads', {});
+  check('and the id it returns is the one the listing hands back',
+    (v11Door2.json?.uploads ?? []).some((row) => row.id === v11Door.json?.id),
+    JSON.stringify(v11Door.json?.id));
   await setRole('curator');
 
   /* V10-1 — consent to be named is a promise the record has to be able to keep.
