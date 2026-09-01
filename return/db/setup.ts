@@ -93,57 +93,77 @@ async function ensureLegacyColumns(d1: D1Database) {
     }
   }
 
+}
+
+/**
+ * The data repairs, for one workspace (V11-9).
+ *
+ * These used to run unscoped from `ensureSchema`, which made the boot path cost grow with
+ * the number of workspaces in the database rather than with the one being served. At 142
+ * workspaces the seed backfill alone attempted fifteen statements against every copy of
+ * every object on each cold isolate, and the Worker began answering 1102 — exceeded
+ * resource limits — on requests that had done nothing yet.
+ *
+ * Scoping them changes nothing about what a workspace ends up holding. Each repair is
+ * still idempotent and still runs before that workspace is read; it just no longer drags
+ * every other tenant along with it.
+ */
+async function repairWorkspace(d1: D1Database, museumId: string) {
+  const { evidence } = buildSeedDataset('museum_template');
   await d1.batch([
-    d1.prepare("UPDATE submissions SET contributor_name=source, contributor_role='community', updated_at=created_at WHERE updated_at=0"),
-    d1.prepare("UPDATE approvals SET args_snapshot=json_object('draft',snapshot,'object_id',object_id,'object_version',object_version), expires_at=created_at+? WHERE expires_at=0").bind(APPROVAL_TTL_MS),
+    d1.prepare("UPDATE submissions SET contributor_name=source, contributor_role='community', updated_at=created_at WHERE museum_id=? AND updated_at=0").bind(museumId),
+    d1.prepare("UPDATE approvals SET args_snapshot=json_object('draft',snapshot,'object_id',object_id,'object_version',object_version), expires_at=created_at+? WHERE museum_id=? AND expires_at=0").bind(APPROVAL_TTL_MS, museumId),
     // FR-X1 folded `research_only` into `private`. No code path ever distinguished them:
     // both were withheld from public output and from agent tool bodies. Approvals are left
     // alone deliberately — `propose_label_update` evaluates with `publicOutput`, so a
     // non-public consent can never reach a stored snapshot, and rewriting one would break
     // its hash. Workspaces created before this run keep the older, wider CHECK constraint,
     // which still admits `private`; nothing writes the removed value any more.
-    d1.prepare("UPDATE evidence SET consent='private' WHERE consent='research_only'"),
-    d1.prepare("UPDATE submissions SET consent='private' WHERE consent='research_only'"),
+    d1.prepare("UPDATE evidence SET consent='private' WHERE museum_id=? AND consent='research_only'").bind(museumId),
+    d1.prepare("UPDATE submissions SET consent='private' WHERE museum_id=? AND consent='research_only'").bind(museumId),
+    // The seed backfill (MCP-E6), narrowed to this workspace. `INSERT OR IGNORE` against
+    // the (museum_id, id) primary key keeps it idempotent, so it adds what is missing and
+    // touches nothing already there, including a record a curator has since edited.
+    ...evidence.map((item) => d1.prepare(
+      'INSERT OR IGNORE INTO evidence (id,museum_id,object_id,type,title,body,source_name,source_relationship,date_or_period,place,authority,consent,visibility,submitted_by,verified_by,verified_at,created_at,updated_at)'
+      + ' SELECT ?,o.museum_id,o.id,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? FROM objects o WHERE o.museum_id=? AND o.id=?',
+    ).bind(item.id, item.type, item.title, item.body, item.sourceName, item.sourceRelationship, item.date, item.place,
+      item.authority, item.consent, item.visibility, item.submittedBy, item.verifiedBy ?? null, item.verifiedAt,
+      item.createdAt, item.updatedAt, museumId, item.objectId)),
   ]);
 }
 
-/**
- * Put the seed's evidence into workspaces that were created before it existed (MCP-E6).
- *
- * `seedWorkspace` runs once, when a workspace has no objects, so a record added to the
- * seed afterwards never reaches a workspace already in use — including the deployed demo.
- * Every object but the Moonbird Mask held no evidence at all, and the gateway requires a
- * verified citation for any official change, so those records could not reach human
- * approval; seeding alone would have fixed that for new workspaces and left the one
- * people actually look at untouched.
- *
- * Written as one INSERT per seed record across every workspace that holds the object.
- * `INSERT OR IGNORE` against the (museum_id, id) primary key makes it idempotent, so this
- * adds what is missing and touches nothing that is already there — including a record a
- * curator has since edited.
- */
-async function backfillSeedEvidence(d1: D1Database) {
-  const { evidence } = buildSeedDataset('museum_template');
-  await d1.batch(evidence.map((item) => d1.prepare(
-    'INSERT OR IGNORE INTO evidence (id,museum_id,object_id,type,title,body,source_name,source_relationship,date_or_period,place,authority,consent,visibility,submitted_by,verified_by,verified_at,created_at,updated_at)'
-    + ' SELECT ?,o.museum_id,o.id,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? FROM objects o WHERE o.id=?',
-  ).bind(item.id, item.type, item.title, item.body, item.sourceName, item.sourceRelationship, item.date, item.place,
-    item.authority, item.consent, item.visibility, item.submittedBy, item.verifiedBy ?? null, item.verifiedAt,
-    item.createdAt, item.updatedAt, item.objectId)));
-}
 
 let schemaReady: Promise<void> | undefined;
 
+/**
+ * The shape of the database. Tables and columns only, so the cost is the size of the
+ * schema rather than the size of the data, and one run per isolate covers every tenant.
+ */
 async function ensureSchema(d1: D1Database) {
   schemaReady ??= (async () => {
     await createTables(d1);
     await ensureLegacyColumns(d1);
-    await backfillSeedEvidence(d1);
   })().catch((error) => {
     schemaReady = undefined;
     throw error;
   });
   return schemaReady;
+}
+
+/**
+ * Which workspaces this isolate has already repaired.
+ *
+ * The repairs are idempotent, so running one twice costs time rather than correctness;
+ * this keeps a warm isolate from paying for them on every request. A cold isolate repairs
+ * each workspace it serves once, which is bounded by how many a single isolate sees.
+ */
+const repaired = new Set<string>();
+
+async function ensureWorkspaceRepairs(d1: D1Database, museumId: string) {
+  if (repaired.has(museumId)) return;
+  await repairWorkspace(d1, museumId);
+  repaired.add(museumId);
 }
 
 /** Idempotently populate one tenant with the complete fictional demo dataset. */
@@ -205,6 +225,13 @@ export async function ensureDatabase(museumId: string = DEMO_MUSEUM) {
   if (!d1) throw new Error('D1 binding DB is unavailable');
   await ensureSchema(d1);
   const seeded = await d1.prepare('SELECT id FROM objects WHERE museum_id=? LIMIT 1').bind(museumId).first();
-  if (!seeded) await seedWorkspace(d1, museumId);
+  if (!seeded) {
+    // A workspace built from the current seed needs no repair: it is already what the
+    // repairs would make it.
+    await seedWorkspace(d1, museumId);
+    repaired.add(museumId);
+  } else {
+    await ensureWorkspaceRepairs(d1, museumId);
+  }
   return d1;
 }
