@@ -63,6 +63,15 @@ export function modelContextStatus(): { available: boolean; legacy: boolean } {
   return { available: !!context, legacy };
 }
 
+/** The event a registered tool fires once the server has answered it. */
+export const TOOL_RESULT_EVENT = 'return:tool-result';
+
+export type ToolResultDetail = {
+  name: string;
+  readOnly: boolean;
+  result: { outcome?: string; policy?: string; reason?: string; submission_id?: string; attached?: number } | null;
+};
+
 function specFor(tool: ToolSpec, signal: AbortSignal) {
   return {
     name: tool.name,
@@ -80,7 +89,26 @@ function specFor(tool: ToolSpec, signal: AbortSignal) {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(args ?? {}),
       });
-      return response.json();
+      const result = await response.json();
+      /**
+       * The page hears what its own tools did (V11-8).
+       *
+       * A tool call is invisible from the page: it posts, the server answers the agent,
+       * and nothing on screen moves except whatever the live-record poll picks up a
+       * couple of seconds later. Someone watching a person work with an agent had no
+       * acknowledgement that the thing they asked for had landed.
+       *
+       * This announces the result and stops there. It does not navigate — a tool that
+       * moves the browser under its caller is a tool with a side effect nobody asked
+       * for, and unloading the document mid-call would take the answer away from the
+       * agent as well. What the page does with the news is the page's business.
+       */
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(TOOL_RESULT_EVENT, {
+          detail: { name: tool.name, readOnly: tool.readOnly, result },
+        }));
+      }
+      return result;
     },
   };
 }

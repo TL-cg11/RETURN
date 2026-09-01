@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { modelContextStatus, registerWebMcpTools } from './register.ts';
+import { modelContextStatus, registerWebMcpTools, TOOL_RESULT_EVENT, type ToolResultDetail } from './register.ts';
 import { communityTools, curatorTools, sharedTools } from './tools.ts';
 
 type Registered = {
@@ -116,6 +116,39 @@ test('execute posts the arguments to the tool endpoint and returns its JSON', ()
   assert.equal(calls[0].url, '/api/tools/search_collection');
   assert.deepEqual(JSON.parse(calls[0].body), { query: 'mask' });
 }));
+
+/**
+ * The page is told what its own tools did (V11-8). A contribution filed through the tool
+ * surface used to leave no mark on the page the person was looking at, while the same
+ * contribution filed through the form ended on a receipt. The announcement is what closes
+ * that gap, so it is pinned here: the result still goes back to the caller unchanged, and
+ * an event carrying the same result goes to the page alongside it.
+ */
+test('execute announces the result to the page without altering what the agent receives',
+  () => withModelContext(async (registered) => {
+    const heard: ToolResultDetail[] = [];
+    const previousFetch = globalThis.fetch;
+    const previousWindow = (globalThis as { window?: unknown }).window;
+    globalThis.fetch = (async () => ({ json: async () => ({ outcome: 'applied', submission_id: 'SUB-1' }) })) as unknown as typeof fetch;
+    (globalThis as { window?: unknown }).window = {
+      dispatchEvent: (event: CustomEvent<ToolResultDetail>) => { heard.push(event.detail); return true; },
+      CustomEvent,
+    };
+
+    registerWebMcpTools('community');
+    const submit = registered.find((tool) => tool.name === 'submit_evidence')!;
+    const result = await submit.execute({ object_id: 'moonbird-mask' });
+
+    globalThis.fetch = previousFetch;
+    (globalThis as { window?: unknown }).window = previousWindow;
+
+    assert.deepEqual(result, { outcome: 'applied', submission_id: 'SUB-1' });
+    assert.equal(heard.length, 1);
+    assert.equal(heard[0].name, 'submit_evidence');
+    assert.equal(heard[0].readOnly, false);
+    assert.deepEqual(heard[0].result, { outcome: 'applied', submission_id: 'SUB-1' });
+    assert.equal(TOOL_RESULT_EVENT, 'return:tool-result');
+  }));
 
 test('the returned cleanup unregisters every tool it registered', () => withModelContext((registered, unregistered) => {
   const cleanup = registerWebMcpTools('curator');

@@ -26,6 +26,24 @@ a { color:inherit; text-decoration:none; }
 .site-header nav { display:flex; gap:2rem; align-items:center; font-size:.83rem; }
 .site-header nav>a:not(.curator-link) { color:var(--muted); }
 .curator-link { border-bottom:1px solid var(--ink); padding-bottom:3px; }
+/* V11-8 — the receipt a tool-filed contribution never had. Fixed rather than inline so
+   it lands where the reader is looking whatever they have scrolled to, and narrow enough
+   that the record underneath stays visible while it fills in. */
+.agent-result { position:fixed; right:clamp(1rem,3vw,2.2rem); bottom:clamp(1rem,3vw,2.2rem); z-index:40;
+  display:flex; gap:1rem; align-items:flex-start; max-width:min(26rem,calc(100vw - 2rem));
+  background:var(--ink); color:#f4f2ec; padding:1.05rem 1.15rem; box-shadow:0 18px 44px rgba(0,0,0,.28); }
+.agent-result.refused { background:#5c2b23; }
+.agent-result-head { margin:0 0 .45rem; display:flex; align-items:center; gap:.4rem;
+  font-size:.66rem; letter-spacing:.14em; text-transform:uppercase; opacity:.7; }
+.agent-result-mark { font-size:.8rem; }
+.agent-result strong { display:block; font-size:1.02rem; letter-spacing:-.01em; }
+.agent-result p:last-of-type { margin:.4rem 0 0; font-size:.84rem; line-height:1.55; opacity:.85; }
+.agent-result code { display:inline-block; margin-top:.6rem; font-size:.72rem; letter-spacing:.04em;
+  border:1px solid rgba(244,242,236,.28); padding:.2rem .45rem; }
+.agent-result button { flex-shrink:0; color:inherit; opacity:.65; font-size:1.1rem; line-height:1; padding:.1rem .2rem; }
+.agent-result button:hover { opacity:1; }
+@media (max-width:600px) { .agent-result { left:1rem; right:1rem; max-width:none; } }
+
 /* V11-7 — says what this page registered. Quiet on purpose: it is a statement of fact
    for whoever is reading, not a call to action competing with the navigation. */
 .mcp-badge { display:inline-flex; align-items:center; gap:.4rem; font-size:.72rem; letter-spacing:.04em; color:var(--moss); border:1px solid var(--line); padding:.3rem .55rem; cursor:default; }

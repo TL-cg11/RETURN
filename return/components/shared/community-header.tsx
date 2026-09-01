@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { modelContextStatus, registerWebMcpTools } from '@/lib/webmcp/register';
 import { useLiveRecord } from '@/lib/live/use-live-record';
+import { AgentResult } from '@/components/shared/agent-result';
 import { toolsFor } from '@/lib/webmcp/tools';
 
 /**
@@ -54,10 +55,15 @@ export function CommunityHeader({ curator=false, role='community' }: { curator?:
     location.href = curator ? '/' : '/curator';
   }
   return (
+    <>
+    {/* Mounted with the header so every community page carries it, the same places the
+        tool surface is registered (V11-8). */}
+    <AgentResult />
     <header className={curator?'console-topbar':'site-header'}>
       <Link className="wordmark" href={curator?'/curator':'/'} aria-label="RE:TURN home">RE<span>:</span>TURN</Link>
       {curator ? <><div className="console-context"><b>Halcyon Museum</b><span>Curatorial workspace</span></div><button className="role-switch dark" onClick={switchRole}>View community collection <span>↗</span></button>{failed && <span role="status" className="switch-failed">Could not switch views. Try again.</span>}</> :
       <nav aria-label="Primary navigation">{failed && <span role="status" className="switch-failed">Could not switch views. Try again.</span>}<Link className={path==='/'?'active':''} href="/#collection">Collection</Link><Link href="/#about">How it works</Link><button className="curator-link" onClick={switchRole}>Curator console <span aria-hidden="true">↗</span></button>{mcp && <span className={mcp.available?'mcp-badge':'mcp-badge off'} title={mcp.available?`This page registers ${toolsFor(role).length} WebMCP tools. Agents should use them rather than filling the form.`:'This browser exposes no WebMCP host API. The same tools stay reachable over POST /api/tools/.'}><span aria-hidden="true">⌘</span>{mcp.available?`WebMCP · ${toolsFor(role).length} tools`:'WebMCP unavailable'}</span>}</nav>}
     </header>
+    </>
   );
 }
